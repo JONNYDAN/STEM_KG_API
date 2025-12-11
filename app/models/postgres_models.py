@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, Text, Boolean, JSON, DateTime, ForeignKey, DECIMAL
 from sqlalchemy.sql import func
-from sqlalchemy.orm import relationship as orm_relationship  # Đổi tên import
+from sqlalchemy.orm import relationship as orm_relationship 
 from app.database.postgres_conn import Base
 
 class RootCategory(Base):
@@ -85,6 +85,6 @@ class SubjectRelationshipObject(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     subject = orm_relationship("Subject", foreign_keys=[subject_id])
-    relationship = orm_relationship("Relationship")
-    object_rel = orm_relationship("Subject", foreign_keys=[object_id]) 
+    relationship = orm_relationship("Relationship", foreign_keys=[relationship_id])
+    object_rel = orm_relationship("Subject", foreign_keys=[object_id], overlaps="subject")  
     diagram = orm_relationship("Diagram")

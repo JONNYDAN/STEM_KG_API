@@ -105,3 +105,62 @@ class SROResponse(SROBase):
     created_at: datetime
     
     model_config = ConfigDict(from_attributes=True)
+    
+class RootCategoryUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+class CategoryUpdate(BaseModel):
+    name: Optional[str] = None
+    root_category_id: Optional[str] = None
+    description: Optional[str] = None
+    diagram_count: Optional[int] = None
+
+class DiagramUpdate(BaseModel):
+    category_id: Optional[int] = None
+    image_path: Optional[str] = None
+    processed: Optional[bool] = None
+    diagram_metadata: Optional[dict] = None
+
+class RootSubjectUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    parent_id: Optional[int] = None
+    level: Optional[int] = None
+
+class SubjectUpdate(BaseModel):
+    name: Optional[str] = None
+    root_subject_id: Optional[int] = None
+    synonyms: Optional[List[str]] = None
+    description: Optional[str] = None
+
+class RelationshipUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    inverse_relationship: Optional[str] = None
+    semantic_type: Optional[str] = None
+
+class SROUpdate(BaseModel):
+    subject_id: Optional[int] = None
+    relationship_id: Optional[int] = None
+    object_id: Optional[int] = None
+    diagram_id: Optional[str] = None
+    confidence_score: Optional[float] = Field(None, ge=0.0, le=1.0)
+    context: Optional[str] = None
+
+# Pagination and Filter schemas
+class PaginationParams(BaseModel):
+    page: int = Field(1, ge=1)
+    page_size: int = Field(10, ge=1, le=100)
+
+class SubjectFilter(BaseModel):
+    name: Optional[str] = None
+    root_subject_id: Optional[int] = None
+    search_term: Optional[str] = None
+
+class SROFilter(BaseModel):
+    subject_name: Optional[str] = None
+    relationship_name: Optional[str] = None
+    object_name: Optional[str] = None
+    diagram_id: Optional[str] = None
+    min_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
