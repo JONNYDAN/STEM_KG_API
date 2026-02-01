@@ -41,6 +41,10 @@ STEM_KG_API/
 # Khởi động hệ thống
 docker-compose up -d
 
+# (Tùy chọn) Bật trigger sinh mã tự động trong PostgreSQL
+# Chạy sau khi các bảng đã được tạo
+# psql -h <host> -U <user> -d <db> -f database/postgres_triggers.sql
+
 # API sẽ có sẵn tại: http://localhost:8000
 
 # Truy vấn bộ ba

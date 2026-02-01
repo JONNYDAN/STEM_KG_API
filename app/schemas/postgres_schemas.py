@@ -52,7 +52,7 @@ class RootSubjectBase(BaseModel):
     level: int = 0
 
 class RootSubjectCreate(RootSubjectBase):
-    pass
+    id: Optional[int] = None  # Optional id for upsert operations
 
 class RootSubjectResponse(RootSubjectBase):
     id: int
@@ -64,6 +64,7 @@ class SubjectBase(BaseModel):
     root_subject_id: int
     synonyms: Optional[List[str]] = []
     description: Optional[str] = None
+    categories: Optional[List[str]] = []  # Category names this subject belongs to
 
 class SubjectCreate(SubjectBase):
     pass
@@ -133,6 +134,7 @@ class SubjectUpdate(BaseModel):
     root_subject_id: Optional[int] = None
     synonyms: Optional[List[str]] = None
     description: Optional[str] = None
+    categories: Optional[List[str]] = None
 
 class RelationshipUpdate(BaseModel):
     name: Optional[str] = None

@@ -114,10 +114,30 @@ class PostgresService:
     
     # ========== ROOT SUBJECTS ==========
     def create_root_subject(self, root_subject: schemas.RootSubjectCreate) -> models.RootSubject:
-        db_root_subject = models.RootSubject(**root_subject.model_dump())
+        """Create or update root subject. If id provided and exists, update instead of insert."""
+        # Check if id is provided and already exists
+        if hasattr(root_subject, 'id') and root_subject.id:
+            existing = self.get_root_subject(root_subject.id)
+            if existing:
+                # Update the existing record
+                return self.update_root_subject(root_subject.id, schemas.RootSubjectUpdate(**root_subject.model_dump(exclude={'id'})))
+        
+        # Create new record
+        db_root_subject = models.RootSubject(**root_subject.model_dump(exclude={'id'} if not root_subject.id else set()))
         self.db.add(db_root_subject)
-        self.db.commit()
-        self.db.refresh(db_root_subject)
+        try:
+            self.db.commit()
+            self.db.refresh(db_root_subject)
+        except Exception as e:
+            self.db.rollback()
+            # If duplicate key error, try to fetch and return existing
+            if 'duplicate' in str(e).lower() or 'unique' in str(e).lower():
+                # Try to extract id from error or from request
+                if hasattr(root_subject, 'id') and root_subject.id:
+                    existing = self.get_root_subject(root_subject.id)
+                    if existing:
+                        return existing
+            raise
         return db_root_subject
     
     def get_root_subject(self, root_subject_id: int) -> Optional[models.RootSubject]:
@@ -140,19 +160,52 @@ class PostgresService:
         return db_root_subject
     
     def delete_root_subject(self, root_subject_id: int) -> bool:
-        db_root_subject = self.get_root_subject(root_subject_id)
-        if db_root_subject:
-            self.db.delete(db_root_subject)
-            self.db.commit()
-            return True
-        return False
+        try:
+            # First delete all subjects related to this root_subject
+            subjects = self.get_subjects_by_root(root_subject_id, skip=0, limit=10000)
+            for subject in subjects:
+                self.delete_subject(subject.id)
+            
+            # Then delete the root_subject itself
+            db_root_subject = self.db.query(models.RootSubject).filter(
+                models.RootSubject.id == root_subject_id
+            ).first()
+            
+            if db_root_subject:
+                self.db.delete(db_root_subject)
+                self.db.commit()
+                return True
+            return False
+        except Exception as e:
+            self.db.rollback()
+            raise
     
     # ========== SUBJECTS ==========
     def create_subject(self, subject: schemas.SubjectCreate) -> models.Subject:
-        db_subject = models.Subject(**subject.model_dump())
+        """Create or update subject. If id provided and exists, update instead of insert."""
+        # Check if id is provided and already exists
+        if hasattr(subject, 'id') and subject.id:
+            existing = self.get_subject(subject.id)
+            if existing:
+                # Update the existing record
+                return self.update_subject(subject.id, schemas.SubjectUpdate(**subject.model_dump(exclude={'id'})))
+        
+        # Create new record
+        db_subject = models.Subject(**subject.model_dump(exclude={'id'} if not subject.id else set()))
         self.db.add(db_subject)
-        self.db.commit()
-        self.db.refresh(db_subject)
+        try:
+            self.db.commit()
+            self.db.refresh(db_subject)
+        except Exception as e:
+            self.db.rollback()
+            # If duplicate key error, try to fetch and return existing
+            if 'duplicate' in str(e).lower() or 'unique' in str(e).lower():
+                # Try to extract id from error or from request
+                if hasattr(subject, 'id') and subject.id:
+                    existing = self.get_subject(subject.id)
+                    if existing:
+                        return existing
+            raise
         return db_subject
     
     def get_subject(self, subject_id: int) -> Optional[models.Subject]:

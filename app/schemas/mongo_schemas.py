@@ -49,3 +49,40 @@ class SemanticRelationshipResponse(SemanticRelationshipCreate):
         from_attributes=True,
         populate_by_name=True
     )
+
+class RootSubjectDocCreate(BaseModel):
+    root_subject_id: int
+    name: str
+    description: Optional[str] = None
+    parent_id: Optional[int] = None
+    level: int = 0
+
+    model_config = ConfigDict(from_attributes=True)
+
+class RootSubjectDocResponse(RootSubjectDocCreate):
+    id: str = Field(alias="_id")
+    created_at: datetime
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        populate_by_name=True
+    )
+
+class SubjectDocCreate(BaseModel):
+    subject_id: int
+    name: str
+    root_subject_id: int
+    synonyms: Optional[List[str]] = []
+    description: Optional[str] = None
+    categories: Optional[List[str]] = []  # Category names this subject belongs to
+
+    model_config = ConfigDict(from_attributes=True)
+
+class SubjectDocResponse(SubjectDocCreate):
+    id: str = Field(alias="_id")
+    created_at: datetime
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        populate_by_name=True
+    )

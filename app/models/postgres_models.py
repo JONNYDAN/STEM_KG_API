@@ -17,8 +17,10 @@ class Category(Base):
     __tablename__ = "categories"
     
     id = Column(Integer, primary_key=True, index=True)
+    code = Column(String(50), unique=True, index=True)
     name = Column(String(100), nullable=False)
     root_category_id = Column(String(50), ForeignKey("root_categories.id"))
+    level = Column(Integer, default=1)
     description = Column(Text)
     diagram_count = Column(Integer, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -54,10 +56,12 @@ class Subject(Base):
     __tablename__ = "subjects"
     
     id = Column(Integer, primary_key=True, index=True)
+    code = Column(String(50), unique=True, index=True)
     name = Column(String(100), nullable=False)
     root_subject_id = Column(Integer, ForeignKey("root_subjects.id"))
     synonyms = Column(JSON)
     description = Column(Text)
+    categories = Column(JSON)  # List of category names this subject belongs to
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     root_subject = orm_relationship("RootSubject", back_populates="subjects")
@@ -66,6 +70,7 @@ class Relationship(Base):
     __tablename__ = "relationships"
     
     id = Column(Integer, primary_key=True, index=True)
+    code = Column(String(50), unique=True, index=True)
     name = Column(String(100), nullable=False)
     description = Column(Text)
     inverse_relationship = Column(String(100))

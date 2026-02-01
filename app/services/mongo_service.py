@@ -2,7 +2,9 @@
 from app.database.mongo_conn import get_mongo_db
 from app.schemas.mongo_schemas import (
     DiagramAnnotationCreate, 
-    SemanticRelationshipCreate
+    SemanticRelationshipCreate,
+    RootSubjectDocCreate,
+    SubjectDocCreate
 )
 from typing import List, Dict, Any, Optional
 from bson import ObjectId
@@ -12,6 +14,8 @@ class MongoService:
         self.db = get_mongo_db()
         self.diagram_annotations = self.db["diagram_annotations"]
         self.semantic_relationships = self.db["semantic_relationships"]
+        self.root_subjects = self.db["root_subjects"]
+        self.subjects = self.db["subjects"]
     
     def create_diagram_annotation(self, annotation: DiagramAnnotationCreate) -> Dict[str, Any]:
         """Tạo annotation mới cho diagram"""
@@ -100,5 +104,73 @@ class MongoService:
             return result.deleted_count > 0
         except:
             return False
+
+    # ========== ROOT SUBJECTS ==========
+    def create_root_subject(self, root_subject: RootSubjectDocCreate) -> Dict[str, Any]:
+        data = root_subject.model_dump()
+        data["created_at"] = datetime.now()
+        result = self.root_subjects.insert_one(data)
+        return self.get_root_subject_by_id(str(result.inserted_id))
+
+    def get_root_subject_by_id(self, doc_id: str) -> Optional[Dict[str, Any]]:
+        try:
+            obj_id = ObjectId(doc_id)
+            result = self.root_subjects.find_one({"_id": obj_id})
+            if result:
+                result["_id"] = str(result["_id"])
+            return result
+        except:
+            return None
+
+    def get_root_subject_by_root_id(self, root_subject_id: int) -> Optional[Dict[str, Any]]:
+        result = self.root_subjects.find_one({"root_subject_id": root_subject_id})
+        if result:
+            result["_id"] = str(result["_id"])
+        return result
+
+    def update_root_subject(self, root_subject_id: int, update_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        self.root_subjects.update_one(
+            {"root_subject_id": root_subject_id},
+            {"$set": update_data}
+        )
+        return self.get_root_subject_by_root_id(root_subject_id)
+
+    def delete_root_subject(self, root_subject_id: int) -> bool:
+        result = self.root_subjects.delete_one({"root_subject_id": root_subject_id})
+        return result.deleted_count > 0
+
+    # ========== SUBJECTS ==========
+    def create_subject(self, subject: SubjectDocCreate) -> Dict[str, Any]:
+        data = subject.model_dump()
+        data["created_at"] = datetime.now()
+        result = self.subjects.insert_one(data)
+        return self.get_subject_by_id(str(result.inserted_id))
+
+    def get_subject_by_id(self, doc_id: str) -> Optional[Dict[str, Any]]:
+        try:
+            obj_id = ObjectId(doc_id)
+            result = self.subjects.find_one({"_id": obj_id})
+            if result:
+                result["_id"] = str(result["_id"])
+            return result
+        except:
+            return None
+
+    def get_subject_by_subject_id(self, subject_id: int) -> Optional[Dict[str, Any]]:
+        result = self.subjects.find_one({"subject_id": subject_id})
+        if result:
+            result["_id"] = str(result["_id"])
+        return result
+
+    def update_subject(self, subject_id: int, update_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        self.subjects.update_one(
+            {"subject_id": subject_id},
+            {"$set": update_data}
+        )
+        return self.get_subject_by_subject_id(subject_id)
+
+    def delete_subject(self, subject_id: int) -> bool:
+        result = self.subjects.delete_one({"subject_id": subject_id})
+        return result.deleted_count > 0
 
 from datetime import datetime
