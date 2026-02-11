@@ -8,6 +8,7 @@ from app.schemas.mongo_schemas import (
 )
 from typing import List, Dict, Any, Optional
 from bson import ObjectId
+from datetime import datetime
 
 class MongoService:
     def __init__(self):
@@ -16,6 +17,7 @@ class MongoService:
         self.semantic_relationships = self.db["semantic_relationships"]
         self.root_subjects = self.db["root_subjects"]
         self.subjects = self.db["subjects"]
+        self.query_logs = self.db["query_logs"]
     
     def create_diagram_annotation(self, annotation: DiagramAnnotationCreate) -> Dict[str, Any]:
         """Tạo annotation mới cho diagram"""
@@ -173,4 +175,27 @@ class MongoService:
         result = self.subjects.delete_one({"subject_id": subject_id})
         return result.deleted_count > 0
 
-from datetime import datetime
+    # ========== QUERY LOGS ==========
+    def create_query_log(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(payload)
+        data["created_at"] = datetime.now()
+        result = self.query_logs.insert_one(data)
+        return self.get_query_log_by_id(str(result.inserted_id))
+
+    def get_query_log_by_id(self, log_id: str) -> Optional[Dict[str, Any]]:
+        try:
+            obj_id = ObjectId(log_id)
+            result = self.query_logs.find_one({"_id": obj_id})
+            if result:
+                result["_id"] = str(result["_id"])
+            return result
+        except Exception:
+            return None
+
+    def get_query_logs(self, limit: int = 50) -> List[Dict[str, Any]]:
+        results = self.query_logs.find().sort("created_at", -1).limit(limit)
+        logs: List[Dict[str, Any]] = []
+        for result in results:
+            result["_id"] = str(result["_id"])
+            logs.append(result)
+        return logs

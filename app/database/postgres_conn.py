@@ -17,3 +17,6 @@ def get_postgres_db():
         yield db
     finally:
         db.close()
+
+def get_session():
+    return SessionLocal()

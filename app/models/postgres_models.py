@@ -1,7 +1,21 @@
-from sqlalchemy import Column, Integer, String, Text, Boolean, JSON, DateTime, ForeignKey, DECIMAL
+from sqlalchemy import Column, Integer, String, Text, Boolean, JSON, DateTime, ForeignKey, DECIMAL, UUID
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship as orm_relationship 
 from app.database.postgres_conn import Base
+import uuid
+
+class User(Base):
+    __tablename__ = "users"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    username = Column(String(150), unique=True, nullable=False, index=True)
+    password_hash = Column(String(255), nullable=False)
+    name = Column(String(150), nullable=False)
+    role = Column(String(50), nullable=False, default="user")
+    group_tags = Column(JSON, nullable=False, default=list)
+    photo_url = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 class RootCategory(Base):
     __tablename__ = "root_categories"

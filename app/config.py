@@ -27,5 +27,17 @@ class Config:
     APP_TITLE = "STEM Knowledge Graph API"
     APP_VERSION = "1.0.0"
     API_PREFIX = "/api"
+
+    # OCR Model API
+    MODEL_OCR_URL = os.getenv("MODEL_OCR_URL", "http://localhost:5000/api/analyze")
+
+    # Uploads
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    UPLOAD_DIR = os.getenv("UPLOAD_DIR", os.path.join(BASE_DIR, "images", "uploads"))
+
+    # Auth
+    JWT_SECRET = os.getenv("JWT_SECRET", "stem_kg_secret")
+    JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+    JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "1440"))
     
 config = Config()
