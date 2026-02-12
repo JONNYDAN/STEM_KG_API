@@ -6,6 +6,7 @@ MongoDB, PostgreSQL, and Neo4j are kept in sync
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 from sqlalchemy.orm import Session
+import re
 
 from app.database.mongo_conn import get_mongo_db
 from app.database.neo4j_conn import get_neo4j_session
@@ -37,51 +38,96 @@ class EntityService:
         collection.delete_one({"_sync_id": entity_id})
     
     def _sync_to_neo4j(self, label: str, entity_id: str, properties: Dict[str, Any]):
-        """Sync entity data to Neo4j"""
+        """Sync entity data to Neo4j (always match by name to avoid duplicates)"""
         session = get_neo4j_session()
         try:
             # Prepare properties for Neo4j (remove None values)
             props = {k: v for k, v in properties.items() if v is not None}
-            props["entity_id"] = entity_id
             
-            # Create or update node
+            # Always match by name (stable identifier across all nodes)
+            name = props.get("name")
+            if not name:
+                return  # Skip if no name available
+            
+            # Create or update node - match by name, then set all properties including code
             query = f"""
-            MERGE (n:{label} {{entity_id: $entity_id}})
+            MERGE (n:{label} {{name: $name}})
             SET n += $props
             RETURN n
             """
-            session.run(query, entity_id=entity_id, props=props)
+            session.run(query, name=name, props=props)
         finally:
             session.close()
     
-    def _delete_from_neo4j(self, label: str, entity_id: str):
-        """Delete entity from Neo4j"""
+    def _delete_from_neo4j(self, label: str, entity_id: str, name: str = None):
+        """Delete entity from Neo4j (match by name)"""
         session = get_neo4j_session()
         try:
-            query = f"MATCH (n:{label} {{entity_id: $entity_id}}) DETACH DELETE n"
-            session.run(query, entity_id=entity_id)
+            if name:
+                query = f"MATCH (n:{label} {{name: $name}}) DETACH DELETE n"
+                session.run(query, name=name)
+            else:
+                # Fallback: try to match by id if name not provided
+                query = f"MATCH (n:{label} {{id: $id}}) DETACH DELETE n"
+                session.run(query, id=entity_id)
         finally:
             session.close()
     
-    def _create_relationship_in_neo4j(self, subject_id: str, rel_name: str, object_id: str, properties: Dict = None):
-        """Create relationship in Neo4j"""
+    def _create_relationship_in_neo4j(self, subject_code: str, rel_name: str, object_code: str, properties: Dict = None):
+        """Create relationship in Neo4j (match subjects by code or name)"""
         session = get_neo4j_session()
         try:
             props = properties or {}
+            # Try to match by code first, fallback to id
             query = f"""
-            MATCH (s:Subject {{entity_id: $subject_id}})
-            MATCH (o:Subject {{entity_id: $object_id}})
+            MATCH (s:Subject)
+            WHERE s.code = $subject_code OR s.id = $subject_code OR s.name = $subject_code
+            MATCH (o:Subject)
+            WHERE o.code = $object_code OR o.id = $object_code OR o.name = $object_code
             MERGE (s)-[r:{rel_name}]->(o)
             SET r += $props
             RETURN r
             """
-            session.run(query, subject_id=subject_id, object_id=object_id, props=props)
+            session.run(query, subject_code=str(subject_code), object_code=str(object_code), props=props)
         finally:
             session.close()
+
+    def _derive_root_code(self, raw_value: Optional[str]) -> str:
+        if not raw_value:
+            return "UNK"
+        value = raw_value.strip()
+        if re.fullmatch(r"[A-Z0-9_]{1,6}", value):
+            return value
+        parts = re.split(r"[^A-Za-z0-9]+", value)
+        initials = "".join(part[0] for part in parts if part)
+        if len(initials) >= 3:
+            return initials.upper()
+        compact = re.sub(r"[^A-Za-z0-9]", "", value).upper()
+        if len(compact) >= 3:
+            return compact[:3]
+        return (compact + "XXX")[:3]
+
+    def _next_subject_sequence(self, root_code: str) -> int:
+        prefix = f"SUB-{root_code}-"
+        existing_codes = (
+            self.pg_db.query(Subject.code)
+            .filter(Subject.code.like(f"{prefix}%"))
+            .all()
+        )
+        max_seq = 0
+        for (code,) in existing_codes:
+            if not code or not code.startswith(prefix):
+                continue
+            suffix = code[len(prefix):]
+            if suffix.isdigit():
+                max_seq = max(max_seq, int(suffix))
+        return max_seq + 1
     
     # ==================== RootCategory ====================
     def create_root_category(self, data: Dict[str, Any]) -> RootCategory:
         # PostgreSQL
+        if not data.get("code"):
+            data["code"] = self._derive_root_code(data.get("id"))
         entity = RootCategory(**data)
         self.pg_db.add(entity)
         self.pg_db.commit()
@@ -90,6 +136,7 @@ class EntityService:
         # MongoDB
         self._sync_to_mongo("root_categories", entity.id, {
             "id": entity.id,
+            "code": entity.code,
             "name": entity.name,
             "description": entity.description,
             "created_at": entity.created_at,
@@ -97,6 +144,7 @@ class EntityService:
         
         # Neo4j
         self._sync_to_neo4j("RootCategory", entity.id, {
+            "code": entity.code,
             "name": entity.name,
             "description": entity.description,
         })
@@ -107,6 +155,9 @@ class EntityService:
         entity = self.pg_db.query(RootCategory).filter(RootCategory.id == entity_id).first()
         if not entity:
             return None
+
+        if "code" not in data and not entity.code:
+            data["code"] = self._derive_root_code(entity.id)
         
         # Update PostgreSQL
         for key, value in data.items():
@@ -118,10 +169,12 @@ class EntityService:
         # Sync to MongoDB and Neo4j
         self._sync_to_mongo("root_categories", entity.id, {
             "id": entity.id,
+            "code": entity.code,
             "name": entity.name,
             "description": entity.description,
         })
         self._sync_to_neo4j("RootCategory", entity.id, {
+            "code": entity.code,
             "name": entity.name,
             "description": entity.description,
         })
@@ -133,11 +186,12 @@ class EntityService:
         if not entity:
             return False
         
+        entity_name = entity.name
         self.pg_db.delete(entity)
         self.pg_db.commit()
         
         self._delete_from_mongo("root_categories", entity_id)
-        self._delete_from_neo4j("RootCategory", entity_id)
+        self._delete_from_neo4j("RootCategory", entity_id, name=entity_name)
         
         return True
     
@@ -146,6 +200,15 @@ class EntityService:
     
     # ==================== Category ====================
     def create_category(self, data: Dict[str, Any]) -> Category:
+        if not data.get("root_category_id"):
+            raise ValueError("Root category not found")
+        root = self.pg_db.query(RootCategory).filter(RootCategory.id == data.get("root_category_id")).first()
+        if not root:
+            raise ValueError("Root category not found")
+        if not data.get("code"):
+            root_code = root.code or self._derive_root_code(root.id)
+            level = data.get("level") or 1
+            data["code"] = f"CAT-{root_code}-{level}"
         entity = Category(**data)
         self.pg_db.add(entity)
         self.pg_db.commit()
@@ -174,6 +237,15 @@ class EntityService:
         entity = self.pg_db.query(Category).filter(Category.id == entity_id).first()
         if not entity:
             return None
+
+        if "root_category_id" in data or "level" in data:
+            root_category_id = data.get("root_category_id", entity.root_category_id)
+            root = self.pg_db.query(RootCategory).filter(RootCategory.id == root_category_id).first()
+            if not root:
+                raise ValueError("Root category not found")
+            root_code = root.code or self._derive_root_code(root.id)
+            level = data.get("level", entity.level or 1)
+            data["code"] = f"CAT-{root_code}-{level}"
         
         for key, value in data.items():
             if hasattr(entity, key):
@@ -205,11 +277,12 @@ class EntityService:
         if not entity:
             return False
         
+        entity_name = entity.name
         self.pg_db.delete(entity)
         self.pg_db.commit()
         
         self._delete_from_mongo("categories", str(entity_id))
-        self._delete_from_neo4j("Category", str(entity_id))
+        self._delete_from_neo4j("Category", str(entity_id), name=entity_name)
         
         return True
     
@@ -218,6 +291,8 @@ class EntityService:
     
     # ==================== RootSubject ====================
     def create_root_subject(self, data: Dict[str, Any]) -> RootSubject:
+        if not data.get("code"):
+            data["code"] = self._derive_root_code(data.get("name"))
         entity = RootSubject(**data)
         self.pg_db.add(entity)
         self.pg_db.commit()
@@ -225,6 +300,7 @@ class EntityService:
         
         self._sync_to_mongo("root_subjects", str(entity.id), {
             "id": entity.id,
+            "code": entity.code,
             "name": entity.name,
             "description": entity.description,
             "parent_id": entity.parent_id,
@@ -232,6 +308,7 @@ class EntityService:
         })
         
         self._sync_to_neo4j("RootSubject", str(entity.id), {
+            "code": entity.code,
             "name": entity.name,
             "description": entity.description,
             "level": entity.level,
@@ -243,6 +320,9 @@ class EntityService:
         entity = self.pg_db.query(RootSubject).filter(RootSubject.id == entity_id).first()
         if not entity:
             return None
+
+        if "code" not in data and "name" in data:
+            data["code"] = self._derive_root_code(data.get("name"))
         
         for key, value in data.items():
             if hasattr(entity, key):
@@ -252,6 +332,7 @@ class EntityService:
         
         self._sync_to_mongo("root_subjects", str(entity.id), {
             "id": entity.id,
+            "code": entity.code,
             "name": entity.name,
             "description": entity.description,
             "parent_id": entity.parent_id,
@@ -259,6 +340,7 @@ class EntityService:
         })
         
         self._sync_to_neo4j("RootSubject", str(entity.id), {
+            "code": entity.code,
             "name": entity.name,
             "description": entity.description,
             "level": entity.level,
@@ -271,11 +353,12 @@ class EntityService:
         if not entity:
             return False
         
+        entity_name = entity.name
         self.pg_db.delete(entity)
         self.pg_db.commit()
         
         self._delete_from_mongo("root_subjects", str(entity_id))
-        self._delete_from_neo4j("RootSubject", str(entity_id))
+        self._delete_from_neo4j("RootSubject", str(entity_id), name=entity_name)
         
         return True
     
@@ -284,6 +367,15 @@ class EntityService:
     
     # ==================== Subject ====================
     def create_subject(self, data: Dict[str, Any]) -> Subject:
+        if not data.get("root_subject_id"):
+            raise ValueError("Root subject not found")
+        root = self.pg_db.query(RootSubject).filter(RootSubject.id == data.get("root_subject_id")).first()
+        if not root:
+            raise ValueError("Root subject not found")
+        if not data.get("code"):
+            root_code = root.code or self._derive_root_code(root.name)
+            seq = self._next_subject_sequence(root_code)
+            data["code"] = f"SUB-{root_code}-{seq:03d}"
         entity = Subject(**data)
         self.pg_db.add(entity)
         self.pg_db.commit()
@@ -311,6 +403,14 @@ class EntityService:
         entity = self.pg_db.query(Subject).filter(Subject.id == entity_id).first()
         if not entity:
             return None
+
+        if "root_subject_id" in data:
+            root = self.pg_db.query(RootSubject).filter(RootSubject.id == data.get("root_subject_id")).first()
+            if not root:
+                raise ValueError("Root subject not found")
+            root_code = root.code or self._derive_root_code(root.name)
+            seq = self._next_subject_sequence(root_code)
+            data["code"] = f"SUB-{root_code}-{seq:03d}"
         
         for key, value in data.items():
             if hasattr(entity, key):
@@ -341,11 +441,12 @@ class EntityService:
         if not entity:
             return False
         
+        entity_name = entity.name
         self.pg_db.delete(entity)
         self.pg_db.commit()
         
         self._delete_from_mongo("subjects", str(entity_id))
-        self._delete_from_neo4j("Subject", str(entity_id))
+        self._delete_from_neo4j("Subject", str(entity_id), name=entity_name)
         
         return True
     
@@ -411,11 +512,12 @@ class EntityService:
         if not entity:
             return False
         
+        entity_name = entity.name
         self.pg_db.delete(entity)
         self.pg_db.commit()
         
         self._delete_from_mongo("relationships", str(entity_id))
-        self._delete_from_neo4j("RelationType", str(entity_id))
+        self._delete_from_neo4j("RelationType", str(entity_id), name=entity_name)
         
         return True
     
@@ -479,7 +581,7 @@ class EntityService:
         self.pg_db.commit()
         
         self._delete_from_mongo("diagrams", entity_id)
-        self._delete_from_neo4j("Diagram", entity_id)
+        self._delete_from_neo4j("Diagram", entity_id, name=entity_id)
         
         return True
     
@@ -496,13 +598,19 @@ class EntityService:
         
         # Get relationship name for Neo4j edge
         rel = self.pg_db.query(Relationship).filter(Relationship.id == entity.relationship_id).first()
-        rel_name = rel.code.upper().replace(" ", "_") if rel else "RELATED_TO"
+        rel_name = rel.code.upper().replace(" ", "_") if rel and rel.code else "RELATED_TO"
+        
+        # Get subject and object codes/names
+        subject = self.pg_db.query(Subject).filter(Subject.id == entity.subject_id).first()
+        obj = self.pg_db.query(Subject).filter(Subject.id == entity.object_id).first()
+        subject_match = subject.code if subject and subject.code else (subject.name if subject else str(entity.subject_id))
+        object_match = obj.code if obj and obj.code else (obj.name if obj else str(entity.object_id))
         
         # Create edge in Neo4j
         self._create_relationship_in_neo4j(
-            str(entity.subject_id),
+            subject_match,
             rel_name,
-            str(entity.object_id),
+            object_match,
             {"confidence_score": float(entity.confidence_score) if entity.confidence_score else None}
         )
         

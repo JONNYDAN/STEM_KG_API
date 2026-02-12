@@ -21,6 +21,7 @@ class RootCategory(Base):
     __tablename__ = "root_categories"
     
     id = Column(String(50), primary_key=True)
+    code = Column(String(50), unique=True, index=True)
     name = Column(String(100), nullable=False)
     description = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -58,6 +59,7 @@ class RootSubject(Base):
     __tablename__ = "root_subjects"
     
     id = Column(Integer, primary_key=True, index=True)
+    code = Column(String(50), unique=True, index=True)
     name = Column(String(100), nullable=False)
     description = Column(Text)
     parent_id = Column(Integer, ForeignKey("root_subjects.id"))

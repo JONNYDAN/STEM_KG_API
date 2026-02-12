@@ -56,8 +56,11 @@ def delete_root_category(entity_id: str, service: EntityService = Depends(get_en
 # ==================== Category ====================
 @router.post("/categories", response_model=CategoryResponse)
 def create_category(payload: CategoryCreate, service: EntityService = Depends(get_entity_service)):
-    entity = service.create_category(payload.model_dump())
-    return entity
+    try:
+        entity = service.create_category(payload.model_dump())
+        return entity
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.get("/categories", response_model=List[CategoryResponse])
@@ -71,7 +74,10 @@ def get_categories(service: EntityService = Depends(get_entity_service)):
 
 @router.put("/categories/{entity_id}", response_model=CategoryResponse)
 def update_category(entity_id: int, payload: CategoryCreate, service: EntityService = Depends(get_entity_service)):
-    entity = service.update_category(entity_id, payload.model_dump(exclude_unset=True))
+    try:
+        entity = service.update_category(entity_id, payload.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     if not entity:
         raise HTTPException(status_code=404, detail="Category not found")
     return entity
@@ -116,8 +122,11 @@ def delete_root_subject(entity_id: int, service: EntityService = Depends(get_ent
 # ==================== Subject ====================
 @router.post("/subjects", response_model=SubjectResponse)
 def create_subject(payload: SubjectCreate, service: EntityService = Depends(get_entity_service)):
-    entity = service.create_subject(payload.model_dump())
-    return entity
+    try:
+        entity = service.create_subject(payload.model_dump())
+        return entity
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.get("/subjects", response_model=List[SubjectResponse])
@@ -131,7 +140,10 @@ def get_subjects(service: EntityService = Depends(get_entity_service)):
 
 @router.put("/subjects/{entity_id}", response_model=SubjectResponse)
 def update_subject(entity_id: int, payload: SubjectCreate, service: EntityService = Depends(get_entity_service)):
-    entity = service.update_subject(entity_id, payload.model_dump(exclude_unset=True))
+    try:
+        entity = service.update_subject(entity_id, payload.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     if not entity:
         raise HTTPException(status_code=404, detail="Subject not found")
     return entity

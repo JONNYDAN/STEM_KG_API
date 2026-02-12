@@ -3,6 +3,38 @@ from sqlalchemy import and_, or_, func
 from app.models import postgres_models as models
 from app.schemas import postgres_schemas as schemas
 from typing import List, Optional, Dict, Any
+import re
+
+def _derive_root_code(raw_value: Optional[str]) -> str:
+    if not raw_value:
+        return "UNK"
+    value = raw_value.strip()
+    if value.isupper() and value.replace("_", "").isalnum() and len(value) <= 6:
+        return value
+    parts = re.split(r"[^A-Za-z0-9]+", value)
+    initials = "".join(part[0] for part in parts if part)
+    if len(initials) >= 3:
+        return initials.upper()
+    compact = re.sub(r"[^A-Za-z0-9]", "", value).upper()
+    if len(compact) >= 3:
+        return compact[:3]
+    return (compact + "XXX")[:3]
+
+def _next_subject_sequence(db: Session, root_code: str) -> int:
+    prefix = f"SUB-{root_code}-"
+    existing_codes = (
+        db.query(models.Subject.code)
+        .filter(models.Subject.code.like(f"{prefix}%"))
+        .all()
+    )
+    max_seq = 0
+    for (code,) in existing_codes:
+        if not code or not code.startswith(prefix):
+            continue
+        suffix = code[len(prefix):]
+        if suffix.isdigit():
+            max_seq = max(max_seq, int(suffix))
+    return max_seq + 1
 
 class PostgresService:
     def __init__(self, db: Session):
@@ -10,7 +42,10 @@ class PostgresService:
     
     # ========== ROOT CATEGORIES ==========
     def create_root_category(self, category: schemas.RootCategoryCreate) -> models.RootCategory:
-        db_category = models.RootCategory(**category.model_dump())
+        category_data = category.model_dump()
+        if not category_data.get("code"):
+            category_data["code"] = _derive_root_code(category_data.get("id"))
+        db_category = models.RootCategory(**category_data)
         self.db.add(db_category)
         self.db.commit()
         self.db.refresh(db_category)
@@ -26,6 +61,8 @@ class PostgresService:
         db_category = self.get_root_category(category_id)
         if db_category:
             update_data = category_update.model_dump(exclude_unset=True)
+            if "code" not in update_data and not db_category.code:
+                update_data["code"] = _derive_root_code(db_category.id)
             for key, value in update_data.items():
                 setattr(db_category, key, value)
             self.db.commit()
@@ -42,7 +79,15 @@ class PostgresService:
     
     # ========== CATEGORIES ==========
     def create_category(self, category: schemas.CategoryCreate) -> models.Category:
-        db_category = models.Category(**category.model_dump())
+        root_category = self.get_root_category(category.root_category_id)
+        if not root_category:
+            raise ValueError("Root category not found")
+        root_code = root_category.code or _derive_root_code(root_category.id)
+        level = category.level if category.level is not None else 1
+        category_data = category.model_dump()
+        category_data["level"] = level
+        category_data["code"] = f"CAT-{root_code}-{level}"
+        db_category = models.Category(**category_data)
         self.db.add(db_category)
         self.db.commit()
         self.db.refresh(db_category)
@@ -61,6 +106,14 @@ class PostgresService:
         db_category = self.get_category(category_id)
         if db_category:
             update_data = category_update.model_dump(exclude_unset=True)
+            if "root_category_id" in update_data or "level" in update_data:
+                root_category_id = update_data.get("root_category_id", db_category.root_category_id)
+                root_category = self.get_root_category(root_category_id)
+                if not root_category:
+                    raise ValueError("Root category not found")
+                level = update_data.get("level", db_category.level)
+                root_code = root_category.code or _derive_root_code(root_category.id)
+                update_data["code"] = f"CAT-{root_code}-{level}"
             for key, value in update_data.items():
                 setattr(db_category, key, value)
             self.db.commit()
@@ -123,7 +176,10 @@ class PostgresService:
                 return self.update_root_subject(root_subject.id, schemas.RootSubjectUpdate(**root_subject.model_dump(exclude={'id'})))
         
         # Create new record
-        db_root_subject = models.RootSubject(**root_subject.model_dump(exclude={'id'} if not root_subject.id else set()))
+        root_subject_data = root_subject.model_dump(exclude={'id'} if not root_subject.id else set())
+        if not root_subject_data.get("code"):
+            root_subject_data["code"] = _derive_root_code(root_subject_data.get("name"))
+        db_root_subject = models.RootSubject(**root_subject_data)
         self.db.add(db_root_subject)
         try:
             self.db.commit()
@@ -153,6 +209,8 @@ class PostgresService:
         db_root_subject = self.get_root_subject(root_subject_id)
         if db_root_subject:
             update_data = root_subject_update.model_dump(exclude_unset=True)
+            if "name" in update_data and "code" not in update_data:
+                update_data["code"] = _derive_root_code(update_data.get("name"))
             for key, value in update_data.items():
                 setattr(db_root_subject, key, value)
             self.db.commit()
@@ -191,7 +249,15 @@ class PostgresService:
                 return self.update_subject(subject.id, schemas.SubjectUpdate(**subject.model_dump(exclude={'id'})))
         
         # Create new record
-        db_subject = models.Subject(**subject.model_dump(exclude={'id'} if not subject.id else set()))
+        subject_data = subject.model_dump(exclude={'id'} if not subject.id else set())
+        root_subject = self.get_root_subject(subject.root_subject_id)
+        if not root_subject:
+            raise ValueError("Root subject not found")
+        root_code_source = root_subject.code or root_subject.name
+        root_code = _derive_root_code(root_code_source)
+        seq = _next_subject_sequence(self.db, root_code)
+        subject_data["code"] = f"SUB-{root_code}-{seq:03d}"
+        db_subject = models.Subject(**subject_data)
         self.db.add(db_subject)
         try:
             self.db.commit()
@@ -231,6 +297,14 @@ class PostgresService:
         db_subject = self.get_subject(subject_id)
         if db_subject:
             update_data = subject_update.model_dump(exclude_unset=True)
+            if "root_subject_id" in update_data:
+                root_subject = self.get_root_subject(update_data.get("root_subject_id"))
+                if not root_subject:
+                    raise ValueError("Root subject not found")
+                root_code_source = root_subject.code or root_subject.name
+                root_code = _derive_root_code(root_code_source)
+                seq = _next_subject_sequence(self.db, root_code)
+                update_data["code"] = f"SUB-{root_code}-{seq:03d}"
             for key, value in update_data.items():
                 setattr(db_subject, key, value)
             self.db.commit()

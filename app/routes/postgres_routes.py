@@ -62,7 +62,10 @@ def create_category(
     db: Session = Depends(get_postgres_db)
 ):
     service = PostgresService(db)
-    return service.create_category(category)
+    try:
+        return service.create_category(category)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 @router.get("/categories/", response_model=List[schemas.CategoryResponse])
 def get_all_categories(
@@ -99,7 +102,10 @@ def update_category(
     db: Session = Depends(get_postgres_db)
 ):
     service = PostgresService(db)
-    updated = service.update_category(category_id, category_update)
+    try:
+        updated = service.update_category(category_id, category_update)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     if not updated:
         raise HTTPException(status_code=404, detail="Category not found")
     return updated
@@ -241,7 +247,10 @@ def create_subject(
     db: Session = Depends(get_postgres_db)
 ):
     service = PostgresService(db)
-    return service.create_subject(subject)
+    try:
+        return service.create_subject(subject)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 @router.get("/subjects/", response_model=List[schemas.SubjectResponse])
 def get_all_subjects(
@@ -289,7 +298,10 @@ def update_subject(
     db: Session = Depends(get_postgres_db)
 ):
     service = PostgresService(db)
-    updated = service.update_subject(subject_id, subject_update)
+    try:
+        updated = service.update_subject(subject_id, subject_update)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     if not updated:
         raise HTTPException(status_code=404, detail="Subject not found")
     return updated

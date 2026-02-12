@@ -4,6 +4,7 @@ from typing import Optional, List, Any
 
 class RootCategoryBase(BaseModel):
     id: str
+    code: Optional[str] = None
     name: str
     description: Optional[str] = None
 
@@ -16,6 +17,7 @@ class RootCategoryResponse(RootCategoryBase):
     model_config = ConfigDict(from_attributes=True)
 
 class CategoryBase(BaseModel):
+    level: int = 1
     name: str
     root_category_id: str
     description: Optional[str] = None
@@ -25,6 +27,7 @@ class CategoryCreate(CategoryBase):
 
 class CategoryResponse(CategoryBase):
     id: int
+    code: Optional[str] = None
     diagram_count: int = 0
     created_at: datetime
     
@@ -46,6 +49,7 @@ class DiagramResponse(DiagramBase):
     model_config = ConfigDict(from_attributes=True)
 
 class RootSubjectBase(BaseModel):
+    code: Optional[str] = None
     name: str
     description: Optional[str] = None
     parent_id: Optional[int] = None
@@ -71,6 +75,7 @@ class SubjectCreate(SubjectBase):
 
 class SubjectResponse(SubjectBase):
     id: int
+    code: Optional[str] = None
     created_at: datetime
     
     model_config = ConfigDict(from_attributes=True)
@@ -108,10 +113,12 @@ class SROResponse(SROBase):
     model_config = ConfigDict(from_attributes=True)
     
 class RootCategoryUpdate(BaseModel):
+    code: Optional[str] = None
     name: Optional[str] = None
     description: Optional[str] = None
 
 class CategoryUpdate(BaseModel):
+    level: Optional[int] = None
     name: Optional[str] = None
     root_category_id: Optional[str] = None
     description: Optional[str] = None
@@ -124,6 +131,7 @@ class DiagramUpdate(BaseModel):
     diagram_metadata: Optional[dict] = None
 
 class RootSubjectUpdate(BaseModel):
+    code: Optional[str] = None
     name: Optional[str] = None
     description: Optional[str] = None
     parent_id: Optional[int] = None

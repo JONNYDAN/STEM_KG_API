@@ -11,12 +11,14 @@ from decimal import Decimal
 # ==================== RootCategory ====================
 class RootCategoryCreate(BaseModel):
     id: str
+    code: Optional[str] = None
     name: str
     description: Optional[str] = None
 
 
 class RootCategoryResponse(BaseModel):
     id: str
+    code: Optional[str] = None
     name: str
     description: Optional[str] = None
     created_at: Optional[datetime] = None
@@ -27,7 +29,7 @@ class RootCategoryResponse(BaseModel):
 
 # ==================== Category ====================
 class CategoryCreate(BaseModel):
-    code: str
+    code: Optional[str] = None
     name: str
     root_category_id: Optional[str] = None
     level: Optional[int] = 1
@@ -51,6 +53,7 @@ class CategoryResponse(BaseModel):
 
 # ==================== RootSubject ====================
 class RootSubjectCreate(BaseModel):
+    code: Optional[str] = None
     name: str
     description: Optional[str] = None
     parent_id: Optional[int] = None
@@ -59,6 +62,7 @@ class RootSubjectCreate(BaseModel):
 
 class RootSubjectResponse(BaseModel):
     id: int
+    code: Optional[str] = None
     name: str
     description: Optional[str] = None
     parent_id: Optional[int] = None
@@ -70,7 +74,7 @@ class RootSubjectResponse(BaseModel):
 
 # ==================== Subject ====================
 class SubjectCreate(BaseModel):
-    code: str
+    code: Optional[str] = None
     name: str
     root_subject_id: Optional[int] = None
     synonyms: Optional[List[str]] = None
@@ -94,7 +98,7 @@ class SubjectResponse(BaseModel):
 
 # ==================== Relationship ====================
 class RelationshipCreate(BaseModel):
-    code: str
+    code: Optional[str] = None
     name: str
     description: Optional[str] = None
     inverse_relationship: Optional[str] = None
