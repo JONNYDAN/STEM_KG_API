@@ -29,12 +29,12 @@ def get_entity_service(db: Session = Depends(get_postgres_db)):
 @router.post("/root-categories", response_model=RootCategoryResponse)
 def create_root_category(payload: RootCategoryCreate, service: EntityService = Depends(get_entity_service)):
     entity = service.create_root_category(payload.model_dump())
-    return entity
+    return RootCategoryResponse.model_validate(entity)
 
 
 @router.get("/root-categories", response_model=List[RootCategoryResponse])
 def get_root_categories(service: EntityService = Depends(get_entity_service)):
-    return service.get_root_categories()
+    return [RootCategoryResponse.model_validate(item) for item in service.get_root_categories()]
 
 
 @router.put("/root-categories/{entity_id}", response_model=RootCategoryResponse)
@@ -42,7 +42,7 @@ def update_root_category(entity_id: str, payload: RootCategoryCreate, service: E
     entity = service.update_root_category(entity_id, payload.model_dump(exclude_unset=True))
     if not entity:
         raise HTTPException(status_code=404, detail="RootCategory not found")
-    return entity
+    return RootCategoryResponse.model_validate(entity)
 
 
 @router.delete("/root-categories/{entity_id}")
@@ -58,7 +58,7 @@ def delete_root_category(entity_id: str, service: EntityService = Depends(get_en
 def create_category(payload: CategoryCreate, service: EntityService = Depends(get_entity_service)):
     try:
         entity = service.create_category(payload.model_dump())
-        return entity
+        return CategoryResponse.model_validate(entity)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -67,7 +67,8 @@ def create_category(payload: CategoryCreate, service: EntityService = Depends(ge
 def get_categories(service: EntityService = Depends(get_entity_service)):
     try:
         result = service.get_categories()
-        return result
+        # Convert SQLAlchemy models to Pydantic schemas
+        return [CategoryResponse.model_validate(item) for item in result]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching categories: {str(e)}")
 
@@ -80,7 +81,7 @@ def update_category(entity_id: int, payload: CategoryCreate, service: EntityServ
         raise HTTPException(status_code=400, detail=str(exc))
     if not entity:
         raise HTTPException(status_code=404, detail="Category not found")
-    return entity
+    return CategoryResponse.model_validate(entity)
 
 
 @router.delete("/categories/{entity_id}")
@@ -95,12 +96,12 @@ def delete_category(entity_id: int, service: EntityService = Depends(get_entity_
 @router.post("/root-subjects", response_model=RootSubjectResponse)
 def create_root_subject(payload: RootSubjectCreate, service: EntityService = Depends(get_entity_service)):
     entity = service.create_root_subject(payload.model_dump())
-    return entity
+    return RootSubjectResponse.model_validate(entity)
 
 
 @router.get("/root-subjects", response_model=List[RootSubjectResponse])
 def get_root_subjects(service: EntityService = Depends(get_entity_service)):
-    return service.get_root_subjects()
+    return [RootSubjectResponse.model_validate(item) for item in service.get_root_subjects()]
 
 
 @router.put("/root-subjects/{entity_id}", response_model=RootSubjectResponse)
@@ -108,7 +109,7 @@ def update_root_subject(entity_id: int, payload: RootSubjectCreate, service: Ent
     entity = service.update_root_subject(entity_id, payload.model_dump(exclude_unset=True))
     if not entity:
         raise HTTPException(status_code=404, detail="RootSubject not found")
-    return entity
+    return RootSubjectResponse.model_validate(entity)
 
 
 @router.delete("/root-subjects/{entity_id}")
@@ -124,7 +125,7 @@ def delete_root_subject(entity_id: int, service: EntityService = Depends(get_ent
 def create_subject(payload: SubjectCreate, service: EntityService = Depends(get_entity_service)):
     try:
         entity = service.create_subject(payload.model_dump())
-        return entity
+        return SubjectResponse.model_validate(entity)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -133,7 +134,8 @@ def create_subject(payload: SubjectCreate, service: EntityService = Depends(get_
 def get_subjects(service: EntityService = Depends(get_entity_service)):
     try:
         result = service.get_subjects()
-        return result
+        # Convert SQLAlchemy models to Pydantic schemas
+        return [SubjectResponse.model_validate(item) for item in result]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching subjects: {str(e)}")
 
@@ -146,7 +148,7 @@ def update_subject(entity_id: int, payload: SubjectCreate, service: EntityServic
         raise HTTPException(status_code=400, detail=str(exc))
     if not entity:
         raise HTTPException(status_code=404, detail="Subject not found")
-    return entity
+    return SubjectResponse.model_validate(entity)
 
 
 @router.delete("/subjects/{entity_id}")
@@ -161,14 +163,15 @@ def delete_subject(entity_id: int, service: EntityService = Depends(get_entity_s
 @router.post("/relationships", response_model=RelationshipResponse)
 def create_relationship(payload: RelationshipCreate, service: EntityService = Depends(get_entity_service)):
     entity = service.create_relationship(payload.model_dump())
-    return entity
+    return RelationshipResponse.model_validate(entity)
 
 
 @router.get("/relationships", response_model=List[RelationshipResponse])
 def get_relationships(service: EntityService = Depends(get_entity_service)):
     try:
         result = service.get_relationships()
-        return result
+        # Convert SQLAlchemy models to Pydantic schemas
+        return [RelationshipResponse.model_validate(item) for item in result]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching relationships: {str(e)}")
 
@@ -178,7 +181,7 @@ def update_relationship(entity_id: int, payload: RelationshipCreate, service: En
     entity = service.update_relationship(entity_id, payload.model_dump(exclude_unset=True))
     if not entity:
         raise HTTPException(status_code=404, detail="Relationship not found")
-    return entity
+    return RelationshipResponse.model_validate(entity)
 
 
 @router.delete("/relationships/{entity_id}")
@@ -193,12 +196,13 @@ def delete_relationship(entity_id: int, service: EntityService = Depends(get_ent
 @router.post("/diagrams", response_model=DiagramResponse)
 def create_diagram(payload: DiagramCreate, service: EntityService = Depends(get_entity_service)):
     entity = service.create_diagram(payload.model_dump())
-    return entity
+    return DiagramResponse.model_validate(entity)
 
 
 @router.get("/diagrams", response_model=List[DiagramResponse])
 def get_diagrams(service: EntityService = Depends(get_entity_service)):
-    return service.get_diagrams()
+    result = service.get_diagrams()
+    return [DiagramResponse.model_validate(item) for item in result]
 
 
 @router.put("/diagrams/{entity_id}", response_model=DiagramResponse)
@@ -206,7 +210,7 @@ def update_diagram(entity_id: str, payload: DiagramCreate, service: EntityServic
     entity = service.update_diagram(entity_id, payload.model_dump(exclude_unset=True))
     if not entity:
         raise HTTPException(status_code=404, detail="Diagram not found")
-    return entity
+    return DiagramResponse.model_validate(entity)
 
 
 @router.delete("/diagrams/{entity_id}")
@@ -221,9 +225,10 @@ def delete_diagram(entity_id: str, service: EntityService = Depends(get_entity_s
 @router.post("/triples", response_model=TripleResponse)
 def create_triple(payload: TripleCreate, service: EntityService = Depends(get_entity_service)):
     entity = service.create_triple(payload.model_dump())
-    return entity
+    return TripleResponse.model_validate(entity)
 
 
 @router.get("/triples", response_model=List[TripleResponse])
 def get_triples(service: EntityService = Depends(get_entity_service)):
-    return service.get_triples()
+    result = service.get_triples()
+    return [TripleResponse.model_validate(item) for item in result]

@@ -3,7 +3,10 @@ from app.database.neo4j_conn import get_neo4j_session
 from app.schemas.neo4j_schemas import NodeCreate, RelationshipCreate, NodeSelector
 from typing import List, Dict, Any, Optional
 import re
+import logging
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 def _serialize_neo4j_dict(node_dict: Dict[str, Any]) -> Dict[str, Any]:
     """Convert Neo4j types (like neo4j.time.DateTime) to JSON-serializable types"""
@@ -498,9 +501,28 @@ class Neo4jService:
             SET r += $properties
             RETURN r
             """
-            self.session.run(query, from_id=from_subject_id, to_id=to_subject_id, properties=props)
-            return True
-        except Exception:
+            result = self.session.run(query, from_id=from_subject_id, to_id=to_subject_id, properties=props)
+            record = result.single()
+            return dict(record["r"]) if record else {}
+        except Exception as e:
+            logger.error(f"Error creating subject relationship: {e}")
+            return {}
+    
+    def delete_relationship_between_subjects(self, from_subject_id: int, to_subject_id: int, 
+                                            relationship_type: str) -> bool:
+        """Delete a specific relationship between two subjects"""
+        try:
+            self._validate_identifier(relationship_type, "relationship_type")
+            query = f"""
+            MATCH (s1:Subject {{id: $from_id}})-[r:{relationship_type}]->(s2:Subject {{id: $to_id}})
+            DELETE r
+            RETURN count(r) as deleted_count
+            """
+            result = self.session.run(query, from_id=from_subject_id, to_id=to_subject_id)
+            record = result.single()
+            return record["deleted_count"] > 0 if record else False
+        except Exception as e:
+            logger.error(f"Error deleting subject relationship: {e}")
             return False
 
     def infer_categories_from_subjects(self, subject_names: List[str]) -> List[Dict[str, Any]]:

@@ -20,6 +20,27 @@ def _derive_root_code(raw_value: Optional[str]) -> str:
         return compact[:3]
     return (compact + "XXX")[:3]
 
+def _derive_relationship_code(semantic_type: Optional[str], name: str) -> str:
+    """
+    Generate relationship code from semantic_type + name
+    Example: semantic_type='trophic', name='eats' -> 'TRP-EATS'
+    """
+    if not name:
+        return "UNK"
+    
+    # Clean and uppercase the name
+    name_clean = re.sub(r"[^A-Za-z0-9]", "", name.strip()).upper()
+    
+    # If semantic_type is provided, use it as prefix
+    if semantic_type:
+        type_clean = re.sub(r"[^A-Za-z0-9]", "", semantic_type.strip()).upper()
+        # Get first 3 letters of semantic type
+        type_prefix = type_clean[:3] if len(type_clean) >= 3 else type_clean
+        return f"{type_prefix}-{name_clean}"
+    
+    # If no semantic type, just return the clean name
+    return name_clean
+
 def _next_subject_sequence(db: Session, root_code: str) -> int:
     prefix = f"SUB-{root_code}-"
     existing_codes = (
@@ -321,7 +342,14 @@ class PostgresService:
     
     # ========== RELATIONSHIPS ==========
     def create_relationship(self, relationship: schemas.RelationshipCreate) -> models.Relationship:
-        db_relationship = models.Relationship(**relationship.model_dump())
+        relationship_data = relationship.model_dump()
+        # Auto-generate code from semantic_type + name if not provided
+        if not relationship_data.get("code"):
+            relationship_data["code"] = _derive_relationship_code(
+                relationship_data.get("semantic_type"),
+                relationship_data.get("name")
+            )
+        db_relationship = models.Relationship(**relationship_data)
         self.db.add(db_relationship)
         self.db.commit()
         self.db.refresh(db_relationship)
@@ -343,6 +371,12 @@ class PostgresService:
         db_relationship = self.get_relationship(relationship_id)
         if db_relationship:
             update_data = relationship_update.model_dump(exclude_unset=True)
+            # Auto-update code if name or semantic_type changed
+            if "name" in update_data or "semantic_type" in update_data:
+                new_semantic_type = update_data.get("semantic_type", db_relationship.semantic_type)
+                new_name = update_data.get("name", db_relationship.name)
+                # Always regenerate code when name or semantic_type changes
+                update_data["code"] = _derive_relationship_code(new_semantic_type, new_name)
             for key, value in update_data.items():
                 setattr(db_relationship, key, value)
             self.db.commit()

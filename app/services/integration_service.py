@@ -1,6 +1,4 @@
-from sqlalchemy.ext.asyncio import AsyncSession
-from neo4j import AsyncDriver
-from motor.motor_asyncio import AsyncIOMotorDatabase
+from sqlalchemy.orm import Session
 from typing import Dict, Any, List, Optional
 import logging
 from datetime import datetime
@@ -14,12 +12,12 @@ logger = logging.getLogger(__name__)
 class IntegrationService:
     def __init__(
         self,
-        postgres_db: AsyncSession,
-        neo4j_driver: AsyncDriver,
-        mongo_db: AsyncIOMotorDatabase
+        postgres_db: Session,
+        neo4j_driver = None,
+        mongo_db = None
     ):
         self.postgres_service = PostgresService(postgres_db)
-        self.mongo_service = MongoService(mongo_db)
+        self.mongo_service = MongoService(mongo_db) if mongo_db else None
         self.neo4j_driver = neo4j_driver
     
     async def process_triple_query(
@@ -269,3 +267,264 @@ class IntegrationService:
                 })
         
         return statistics
+    
+    def create_sro_synced(
+        self,
+        subject_id: int,
+        relationship_id: int,
+        object_id: int,
+        diagram_id: Optional[str] = None,
+        confidence_score: Optional[float] = None,
+        context: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Create Subject-Relationship-Object triple and sync to both PostgreSQL and Neo4j
+        Auto-generate code as S + R + O codes
+        """
+        result = {
+            "success": False,
+            "postgres": None,
+            "neo4j": None,
+            "code": None,
+            "errors": []
+        }
+        
+        try:
+            # Get subject, relationship, object details from PostgreSQL
+            subject = self.postgres_service.get_subject(subject_id)
+            relationship = self.postgres_service.get_relationship(relationship_id)
+            obj = self.postgres_service.get_subject(object_id)
+            
+            if not subject or not relationship or not obj:
+                result["errors"].append("Subject, Relationship, or Object not found")
+                return result
+            
+            # Generate code: S + R + O
+            sro_code = f"{subject.code}_{relationship.code}_{obj.code}"
+            result["code"] = sro_code
+            
+            # 1. Create in PostgreSQL
+            from app.schemas.postgres_schemas import SROCreate
+            sro_data = SROCreate(
+                subject_id=subject_id,
+                relationship_id=relationship_id,
+                object_id=object_id,
+                diagram_id=diagram_id,
+                confidence_score=confidence_score,
+                context=context
+            )
+            
+            # Check if already exists
+            existing_sro = self.postgres_service.get_sro_by_triple(
+                subject_id, relationship_id, object_id
+            )
+            
+            if existing_sro:
+                result["postgres"] = {"id": existing_sro.id, "status": "already_exists"}
+            else:
+                pg_sro = self.postgres_service.create_sro(sro_data)
+                result["postgres"] = {"id": pg_sro.id, "status": "created"}
+            
+            # 2. Create in Neo4j
+            if self.neo4j_driver:
+                neo4j_service = Neo4jService()
+                
+                # Create relationship between subject and object nodes
+                neo4j_result = neo4j_service.create_subject_relationship(
+                    from_subject_id=subject_id,
+                    to_subject_id=object_id,
+                    relationship_type=relationship.name.upper().replace(" ", "_"),
+                    properties={
+                        "code": sro_code,
+                        "confidence_score": confidence_score or 1.0,
+                        "context": context or "",
+                        "diagram_id": diagram_id or ""
+                    }
+                )
+                result["neo4j"] = {"status": "created", "data": neo4j_result}
+            
+            result["success"] = True
+            
+        except Exception as e:
+            logger.error(f"Error creating synced SRO: {e}")
+            result["errors"].append(str(e))
+        
+        return result
+    
+    def update_sro_synced(
+        self,
+        sro_id: int,
+        subject_id: Optional[int] = None,
+        relationship_id: Optional[int] = None,
+        object_id: Optional[int] = None,
+        diagram_id: Optional[str] = None,
+        confidence_score: Optional[float] = None,
+        context: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Update Subject-Relationship-Object triple in both PostgreSQL and Neo4j
+        """
+        result = {
+            "success": False,
+            "postgres": None,
+            "neo4j": None,
+            "errors": []
+        }
+        
+        try:
+            # Get existing SRO
+            existing_sro = self.postgres_service.get_sro(sro_id)
+            if not existing_sro:
+                result["errors"].append("SRO not found")
+                return result
+            
+            # Prepare update data
+            from app.schemas.postgres_schemas import SROUpdate
+            update_data = SROUpdate(
+                subject_id=subject_id,
+                relationship_id=relationship_id,
+                object_id=object_id,
+                diagram_id=diagram_id,
+                confidence_score=confidence_score,
+                context=context
+            )
+            
+            # Get old triple info for Neo4j deletion
+            old_subject = self.postgres_service.get_subject(existing_sro.subject_id)
+            old_relationship = self.postgres_service.get_relationship(existing_sro.relationship_id)
+            old_object = self.postgres_service.get_subject(existing_sro.object_id)
+            
+            # 1. Update in PostgreSQL
+            updated_sro = self.postgres_service.update_sro(sro_id, update_data)
+            result["postgres"] = {"id": updated_sro.id, "status": "updated"}
+            
+            # 2. Update in Neo4j (delete old, create new if triple changed)
+            if self.neo4j_driver and (subject_id or relationship_id or object_id):
+                neo4j_service = Neo4jService()
+                
+                # If subject, relationship, or object changed, delete old relationship
+                old_rel_type = old_relationship.name.upper().replace(" ", "_")
+                neo4j_service.delete_relationship_between_subjects(
+                    old_subject.id, old_object.id, old_rel_type
+                )
+                
+                # Create new relationship
+                new_subject = self.postgres_service.get_subject(
+                    subject_id or existing_sro.subject_id
+                )
+                new_relationship = self.postgres_service.get_relationship(
+                    relationship_id or existing_sro.relationship_id
+                )
+                new_object = self.postgres_service.get_subject(
+                    object_id or existing_sro.object_id
+                )
+                
+                new_code = f"{new_subject.code}_{new_relationship.code}_{new_object.code}"
+                
+                neo4j_service.create_subject_relationship(
+                    from_subject_id=new_subject.id,
+                    to_subject_id=new_object.id,
+                    relationship_type=new_relationship.name.upper().replace(" ", "_"),
+                    properties={
+                        "code": new_code,
+                        "confidence_score": confidence_score or updated_sro.confidence_score or 1.0,
+                        "context": context or updated_sro.context or "",
+                        "diagram_id": diagram_id or updated_sro.diagram_id or ""
+                    }
+                )
+                
+                result["neo4j"] = {"status": "updated"}
+            
+            result["success"] = True
+            
+        except Exception as e:
+            logger.error(f"Error updating synced SRO: {e}")
+            result["errors"].append(str(e))
+        
+        return result
+    
+    def delete_sro_synced(self, sro_id: int) -> Dict[str, Any]:
+        """
+        Delete Subject-Relationship-Object triple from both PostgreSQL and Neo4j
+        """
+        result = {
+            "success": False,
+            "postgres": None,
+            "neo4j": None,
+            "errors": []
+        }
+        
+        try:
+            # Get existing SRO for Neo4j deletion
+            existing_sro = self.postgres_service.get_sro(sro_id)
+            if not existing_sro:
+                result["errors"].append("SRO not found")
+                return result
+            
+            subject = self.postgres_service.get_subject(existing_sro.subject_id)
+            relationship = self.postgres_service.get_relationship(existing_sro.relationship_id)
+            obj = self.postgres_service.get_subject(existing_sro.object_id)
+            
+            # 1. Delete from Neo4j first
+            if self.neo4j_driver:
+                neo4j_service = Neo4jService()
+                rel_type = relationship.name.upper().replace(" ", "_")
+                neo4j_service.delete_relationship_between_subjects(
+                    subject.id, obj.id, rel_type
+                )
+                result["neo4j"] = {"status": "deleted"}
+            
+            # 2. Delete from PostgreSQL
+            deleted = self.postgres_service.delete_sro(sro_id)
+            result["postgres"] = {"status": "deleted" if deleted else "not_found"}
+            
+            result["success"] = deleted
+            
+        except Exception as e:
+            logger.error(f"Error deleting synced SRO: {e}")
+            result["errors"].append(str(e))
+        
+        return result
+    
+    def get_all_sros_with_details(
+        self,
+        skip: int = 0,
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """
+        Get all SROs with full details (subject name, relationship name, object name)
+        """
+        try:
+            sros = self.postgres_service.get_all_sros(skip=skip, limit=limit)
+            
+            result = []
+            for sro in sros:
+                subject = self.postgres_service.get_subject(sro.subject_id)
+                relationship = self.postgres_service.get_relationship(sro.relationship_id)
+                obj = self.postgres_service.get_subject(sro.object_id)
+                
+                code = f"{subject.code}_{relationship.code}_{obj.code}"
+                
+                result.append({
+                    "id": sro.id,
+                    "code": code,
+                    "subject_id": sro.subject_id,
+                    "subject_name": subject.name,
+                    "subject_code": subject.code,
+                    "relationship_id": sro.relationship_id,
+                    "relationship_name": relationship.name,
+                    "relationship_code": relationship.code,
+                    "object_id": sro.object_id,
+                    "object_name": obj.name,
+                    "object_code": obj.code,
+                    "diagram_id": sro.diagram_id,
+                    "confidence_score": float(sro.confidence_score) if sro.confidence_score else None,
+                    "context": sro.context,
+                    "created_at": sro.created_at.isoformat() if sro.created_at else None
+                })
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error getting SROs with details: {e}")
+            return []

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Path
 from sqlalchemy.orm import Session
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 
 from app.database.postgres_conn import get_postgres_db
 from app.services.postgres_service import PostgresService
@@ -15,12 +15,14 @@ def create_root_category(
     db: Session = Depends(get_postgres_db)
 ):
     service = PostgresService(db)
-    return service.create_root_category(category)
+    result = service.create_root_category(category)
+    return schemas.RootCategoryResponse.model_validate(result)
 
 @router.get("/root-categories/", response_model=List[schemas.RootCategoryResponse])
 def get_all_root_categories(db: Session = Depends(get_postgres_db)):
     service = PostgresService(db)
-    return service.get_all_root_categories()
+    result = service.get_all_root_categories()
+    return [schemas.RootCategoryResponse.model_validate(item) for item in result]
 
 @router.get("/root-categories/{category_id}", response_model=schemas.RootCategoryResponse)
 def get_root_category(
@@ -31,7 +33,7 @@ def get_root_category(
     category = service.get_root_category(category_id)
     if not category:
         raise HTTPException(status_code=404, detail="Root category not found")
-    return category
+    return schemas.RootCategoryResponse.model_validate(category)
 
 @router.put("/root-categories/{category_id}", response_model=schemas.RootCategoryResponse)
 def update_root_category(
@@ -43,7 +45,7 @@ def update_root_category(
     updated = service.update_root_category(category_id, category_update)
     if not updated:
         raise HTTPException(status_code=404, detail="Root category not found")
-    return updated
+    return schemas.RootCategoryResponse.model_validate(updated)
 
 @router.delete("/root-categories/{category_id}")
 def delete_root_category(
@@ -63,7 +65,8 @@ def create_category(
 ):
     service = PostgresService(db)
     try:
-        return service.create_category(category)
+        result = service.create_category(category)
+        return schemas.CategoryResponse.model_validate(result)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -74,7 +77,8 @@ def get_all_categories(
     db: Session = Depends(get_postgres_db)
 ):
     service = PostgresService(db)
-    return service.get_all_categories(skip=skip, limit=limit)
+    result = service.get_all_categories(skip=skip, limit=limit)
+    return [schemas.CategoryResponse.model_validate(item) for item in result]
 
 @router.get("/categories/{category_id}", response_model=schemas.CategoryResponse)
 def get_category(
@@ -85,7 +89,7 @@ def get_category(
     category = service.get_category(category_id)
     if not category:
         raise HTTPException(status_code=404, detail="Category not found")
-    return category
+    return schemas.CategoryResponse.model_validate(category)
 
 @router.get("/categories/root/{root_category_id}", response_model=List[schemas.CategoryResponse])
 def get_categories_by_root(
@@ -93,7 +97,8 @@ def get_categories_by_root(
     db: Session = Depends(get_postgres_db)
 ):
     service = PostgresService(db)
-    return service.get_categories_by_root(root_category_id)
+    result = service.get_categories_by_root(root_category_id)
+    return [schemas.CategoryResponse.model_validate(item) for item in result]
 
 @router.put("/categories/{category_id}", response_model=schemas.CategoryResponse)
 def update_category(
@@ -108,7 +113,7 @@ def update_category(
         raise HTTPException(status_code=400, detail=str(exc))
     if not updated:
         raise HTTPException(status_code=404, detail="Category not found")
-    return updated
+    return schemas.CategoryResponse.model_validate(updated)
 
 @router.delete("/categories/{category_id}")
 def delete_category(
@@ -127,7 +132,8 @@ def create_diagram(
     db: Session = Depends(get_postgres_db)
 ):
     service = PostgresService(db)
-    return service.create_diagram(diagram)
+    result = service.create_diagram(diagram)
+    return schemas.DiagramResponse.model_validate(result)
 
 @router.get("/diagrams/", response_model=List[schemas.DiagramResponse])
 def get_all_diagrams(
@@ -136,7 +142,8 @@ def get_all_diagrams(
     db: Session = Depends(get_postgres_db)
 ):
     service = PostgresService(db)
-    return service.get_all_diagrams(skip=skip, limit=limit)
+    result = service.get_all_diagrams(skip=skip, limit=limit)
+    return [schemas.DiagramResponse.model_validate(item) for item in result]
 
 @router.get("/diagrams/{diagram_id}", response_model=schemas.DiagramResponse)
 def get_diagram(
@@ -147,7 +154,7 @@ def get_diagram(
     diagram = service.get_diagram(diagram_id)
     if not diagram:
         raise HTTPException(status_code=404, detail="Diagram not found")
-    return diagram
+    return schemas.DiagramResponse.model_validate(diagram)
 
 @router.get("/diagrams/category/{category_id}", response_model=List[schemas.DiagramResponse])
 def get_diagrams_by_category(
@@ -157,7 +164,8 @@ def get_diagrams_by_category(
     db: Session = Depends(get_postgres_db)
 ):
     service = PostgresService(db)
-    return service.get_diagrams_by_category(category_id, skip=skip, limit=limit)
+    result = service.get_diagrams_by_category(category_id, skip=skip, limit=limit)
+    return [schemas.DiagramResponse.model_validate(item) for item in result]
 
 @router.put("/diagrams/{diagram_id}", response_model=schemas.DiagramResponse)
 def update_diagram(
@@ -169,7 +177,7 @@ def update_diagram(
     updated = service.update_diagram(diagram_id, diagram_update)
     if not updated:
         raise HTTPException(status_code=404, detail="Diagram not found")
-    return updated
+    return schemas.DiagramResponse.model_validate(updated)
 
 @router.delete("/diagrams/{diagram_id}")
 def delete_diagram(
@@ -188,7 +196,8 @@ def create_root_subject(
     db: Session = Depends(get_postgres_db)
 ):
     service = PostgresService(db)
-    return service.create_root_subject(root_subject)
+    result = service.create_root_subject(root_subject)
+    return schemas.RootSubjectResponse.model_validate(result)
 
 @router.get("/root-subjects/", response_model=List[schemas.RootSubjectResponse])
 def get_all_root_subjects(
@@ -197,7 +206,8 @@ def get_all_root_subjects(
     db: Session = Depends(get_postgres_db)
 ):
     service = PostgresService(db)
-    return service.get_all_root_subjects(skip=skip, limit=limit)
+    result = service.get_all_root_subjects(skip=skip, limit=limit)
+    return [schemas.RootSubjectResponse.model_validate(item) for item in result]
 
 @router.get("/root-subjects/{root_subject_id}", response_model=schemas.RootSubjectResponse)
 def get_root_subject(
@@ -208,7 +218,7 @@ def get_root_subject(
     root_subject = service.get_root_subject(root_subject_id)
     if not root_subject:
         raise HTTPException(status_code=404, detail="Root subject not found")
-    return root_subject
+    return schemas.RootSubjectResponse.model_validate(root_subject)
 
 @router.get("/root-subjects/level/{level}", response_model=List[schemas.RootSubjectResponse])
 def get_root_subjects_by_level(
@@ -216,7 +226,8 @@ def get_root_subjects_by_level(
     db: Session = Depends(get_postgres_db)
 ):
     service = PostgresService(db)
-    return service.get_root_subjects_by_level(level)
+    result = service.get_root_subjects_by_level(level)
+    return [schemas.RootSubjectResponse.model_validate(item) for item in result]
 
 @router.put("/root-subjects/{root_subject_id}", response_model=schemas.RootSubjectResponse)
 def update_root_subject(
@@ -228,7 +239,7 @@ def update_root_subject(
     updated = service.update_root_subject(root_subject_id, root_subject_update)
     if not updated:
         raise HTTPException(status_code=404, detail="Root subject not found")
-    return updated
+    return schemas.RootSubjectResponse.model_validate(updated)
 
 @router.delete("/root-subjects/{root_subject_id}")
 def delete_root_subject(
@@ -248,18 +259,22 @@ def create_subject(
 ):
     service = PostgresService(db)
     try:
-        return service.create_subject(subject)
+        result = service.create_subject(subject)
+        return schemas.SubjectResponse.model_validate(result)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-@router.get("/subjects/", response_model=List[schemas.SubjectResponse])
+@router.get("/subjects", response_model=Dict)
+@router.get("/subjects/", response_model=Dict)
 def get_all_subjects(
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=100),
+    limit: int = Query(1000, ge=1, le=10000),
     db: Session = Depends(get_postgres_db)
 ):
     service = PostgresService(db)
-    return service.get_all_subjects(skip=skip, limit=limit)
+    subjects = service.get_all_subjects(skip=skip, limit=limit)
+    result = [schemas.SubjectResponse.model_validate(item) for item in subjects]
+    return {"success": True, "data": result}
 
 @router.get("/subjects/{subject_id}", response_model=schemas.SubjectResponse)
 def get_subject(
@@ -270,7 +285,7 @@ def get_subject(
     subject = service.get_subject(subject_id)
     if not subject:
         raise HTTPException(status_code=404, detail="Subject not found")
-    return subject
+    return schemas.SubjectResponse.model_validate(subject)
 
 @router.get("/subjects/root/{root_subject_id}", response_model=List[schemas.SubjectResponse])
 def get_subjects_by_root(
@@ -280,7 +295,8 @@ def get_subjects_by_root(
     db: Session = Depends(get_postgres_db)
 ):
     service = PostgresService(db)
-    return service.get_subjects_by_root(root_subject_id, skip=skip, limit=limit)
+    result = service.get_subjects_by_root(root_subject_id, skip=skip, limit=limit)
+    return [schemas.SubjectResponse.model_validate(item) for item in result]
 
 @router.get("/subjects/search/", response_model=List[schemas.SubjectResponse])
 def search_subjects(
@@ -289,7 +305,8 @@ def search_subjects(
     db: Session = Depends(get_postgres_db)
 ):
     service = PostgresService(db)
-    return service.search_subjects(name=name, root_subject_id=root_subject_id)
+    result = service.search_subjects(name=name, root_subject_id=root_subject_id)
+    return [schemas.SubjectResponse.model_validate(item) for item in result]
 
 @router.put("/subjects/{subject_id}", response_model=schemas.SubjectResponse)
 def update_subject(
@@ -304,7 +321,7 @@ def update_subject(
         raise HTTPException(status_code=400, detail=str(exc))
     if not updated:
         raise HTTPException(status_code=404, detail="Subject not found")
-    return updated
+    return schemas.SubjectResponse.model_validate(updated)
 
 @router.delete("/subjects/{subject_id}")
 def delete_subject(
@@ -323,16 +340,20 @@ def create_relationship(
     db: Session = Depends(get_postgres_db)
 ):
     service = PostgresService(db)
-    return service.create_relationship(relationship)
+    result = service.create_relationship(relationship)
+    return schemas.RelationshipResponse.model_validate(result)
 
-@router.get("/relationships/", response_model=List[schemas.RelationshipResponse])
+@router.get("/relationships", response_model=Dict)
+@router.get("/relationships/", response_model=Dict)
 def get_all_relationships(
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=100),
+    limit: int = Query(1000, ge=1, le=10000),
     db: Session = Depends(get_postgres_db)
 ):
     service = PostgresService(db)
-    return service.get_all_relationships(skip=skip, limit=limit)
+    relationships = service.get_all_relationships(skip=skip, limit=limit)
+    result = [schemas.RelationshipResponse.model_validate(item) for item in relationships]
+    return {"success": True, "data": result}
 
 @router.get("/relationships/{relationship_id}", response_model=schemas.RelationshipResponse)
 def get_relationship(
@@ -343,7 +364,7 @@ def get_relationship(
     relationship = service.get_relationship(relationship_id)
     if not relationship:
         raise HTTPException(status_code=404, detail="Relationship not found")
-    return relationship
+    return schemas.RelationshipResponse.model_validate(relationship)
 
 @router.get("/relationships/type/{semantic_type}", response_model=List[schemas.RelationshipResponse])
 def get_relationships_by_type(
@@ -351,7 +372,8 @@ def get_relationships_by_type(
     db: Session = Depends(get_postgres_db)
 ):
     service = PostgresService(db)
-    return service.get_relationships_by_type(semantic_type)
+    result = service.get_relationships_by_type(semantic_type)
+    return [schemas.RelationshipResponse.model_validate(item) for item in result]
 
 @router.get("/relationships/name/{name}", response_model=schemas.RelationshipResponse)
 def get_relationship_by_name(
@@ -362,7 +384,7 @@ def get_relationship_by_name(
     relationship = service.get_relationship_by_name(name)
     if not relationship:
         raise HTTPException(status_code=404, detail="Relationship not found")
-    return relationship
+    return schemas.RelationshipResponse.model_validate(relationship)
 
 @router.put("/relationships/{relationship_id}", response_model=schemas.RelationshipResponse)
 def update_relationship(
@@ -374,7 +396,7 @@ def update_relationship(
     updated = service.update_relationship(relationship_id, relationship_update)
     if not updated:
         raise HTTPException(status_code=404, detail="Relationship not found")
-    return updated
+    return schemas.RelationshipResponse.model_validate(updated)
 
 @router.delete("/relationships/{relationship_id}")
 def delete_relationship(
@@ -393,7 +415,8 @@ def create_sro(
     db: Session = Depends(get_postgres_db)
 ):
     service = PostgresService(db)
-    return service.create_sro(sro)
+    result = service.create_sro(sro)
+    return schemas.SROResponse.model_validate(result)
 
 @router.get("/sro/", response_model=List[schemas.SROResponse])
 def get_all_sros(
@@ -402,7 +425,8 @@ def get_all_sros(
     db: Session = Depends(get_postgres_db)
 ):
     service = PostgresService(db)
-    return service.get_all_sros(skip=skip, limit=limit)
+    result = service.get_all_sros(skip=skip, limit=limit)
+    return [schemas.SROResponse.model_validate(item) for item in result]
 
 @router.get("/sro/{sro_id}", response_model=schemas.SROResponse)
 def get_sro(
@@ -413,7 +437,7 @@ def get_sro(
     sro = service.get_sro(sro_id)
     if not sro:
         raise HTTPException(status_code=404, detail="SRO not found")
-    return sro
+    return schemas.SROResponse.model_validate(sro)
 
 @router.get("/sro/diagram/{diagram_id}", response_model=List[schemas.SROResponse])
 def get_sros_by_diagram(
@@ -421,7 +445,8 @@ def get_sros_by_diagram(
     db: Session = Depends(get_postgres_db)
 ):
     service = PostgresService(db)
-    return service.get_sros_by_diagram(diagram_id)
+    result = service.get_sros_by_diagram(diagram_id)
+    return [schemas.SROResponse.model_validate(item) for item in result]
 
 @router.get("/sro/subject/{subject_id}", response_model=List[schemas.SROResponse])
 def get_sros_by_subject(
@@ -429,7 +454,8 @@ def get_sros_by_subject(
     db: Session = Depends(get_postgres_db)
 ):
     service = PostgresService(db)
-    return service.get_sros_by_subject(subject_id)
+    result = service.get_sros_by_subject(subject_id)
+    return [schemas.SROResponse.model_validate(item) for item in result]
 
 @router.get("/sro/object/{object_id}", response_model=List[schemas.SROResponse])
 def get_sros_by_object(
@@ -437,7 +463,8 @@ def get_sros_by_object(
     db: Session = Depends(get_postgres_db)
 ):
     service = PostgresService(db)
-    return service.get_sros_by_object(object_id)
+    result = service.get_sros_by_object(object_id)
+    return [schemas.SROResponse.model_validate(item) for item in result]
 
 @router.get("/sro/search/", response_model=List[Dict])
 def search_sros(
@@ -467,7 +494,7 @@ def update_sro(
     updated = service.update_sro(sro_id, sro_update)
     if not updated:
         raise HTTPException(status_code=404, detail="SRO not found")
-    return updated
+    return schemas.SROResponse.model_validate(updated)
 
 @router.delete("/sro/{sro_id}")
 def delete_sro(

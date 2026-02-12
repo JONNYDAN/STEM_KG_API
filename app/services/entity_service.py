@@ -72,6 +72,110 @@ class EntityService:
                 session.run(query, id=entity_id)
         finally:
             session.close()
+
+    def _ensure_root_node(self) -> None:
+        session = get_neo4j_session()
+        try:
+            session.run(
+                "MERGE (root:Root {name: $name})",
+                name="AI2D_Knowledge_Graph"
+            )
+        finally:
+            session.close()
+
+    def _link_root_category(self, root_category_name: Optional[str]) -> None:
+        if not root_category_name:
+            return
+        session = get_neo4j_session()
+        try:
+            query = """
+            MATCH (rc:RootCategory {name: $rc_name})
+            MERGE (root:Root {name: $root_name})
+            MERGE (root)-[:HAS_ROOT_CATEGORY]->(rc)
+            """
+            session.run(
+                query,
+                root_name="AI2D_Knowledge_Graph",
+                rc_name=root_category_name
+            )
+        finally:
+            session.close()
+
+    def _link_root_subject(self, root_subject_name: Optional[str]) -> None:
+        if not root_subject_name:
+            return
+        session = get_neo4j_session()
+        try:
+            query = """
+            MATCH (rs:RootSubject {name: $rs_name})
+            MERGE (root:Root {name: $root_name})
+            MERGE (root)-[:HAS_ROOT_SUBJECT]->(rs)
+            """
+            session.run(
+                query,
+                root_name="AI2D_Knowledge_Graph",
+                rs_name=root_subject_name
+            )
+        finally:
+            session.close()
+
+    def _link_category_to_root(self, root_category_name: Optional[str], category_name: Optional[str], clear_existing: bool = False) -> None:
+        if not category_name:
+            return
+        session = get_neo4j_session()
+        try:
+            if clear_existing:
+                cleanup_query = """
+                MATCH (c:Category {name: $category_name})
+                OPTIONAL MATCH (rc:RootCategory)-[r:HAS_CATEGORY]->(c)
+                DELETE r
+                """
+                session.run(cleanup_query, category_name=category_name)
+
+            if not root_category_name:
+                return
+
+            link_query = """
+            MATCH (rc:RootCategory {name: $root_category_name})
+            MATCH (c:Category {name: $category_name})
+            MERGE (rc)-[:HAS_CATEGORY]->(c)
+            """
+            session.run(
+                link_query,
+                root_category_name=root_category_name,
+                category_name=category_name
+            )
+        finally:
+            session.close()
+
+    def _link_subject_to_root(self, root_subject_name: Optional[str], subject_name: Optional[str], clear_existing: bool = False) -> None:
+        if not subject_name:
+            return
+        session = get_neo4j_session()
+        try:
+            if clear_existing:
+                cleanup_query = """
+                MATCH (s:Subject {name: $subject_name})
+                OPTIONAL MATCH (rs:RootSubject)-[r:HAS_SUBJECT]->(s)
+                DELETE r
+                """
+                session.run(cleanup_query, subject_name=subject_name)
+
+            if not root_subject_name:
+                return
+
+            link_query = """
+            MATCH (rs:RootSubject {name: $root_subject_name})
+            MATCH (s:Subject {name: $subject_name})
+            MERGE (rs)-[:HAS_SUBJECT]->(s)
+            """
+            session.run(
+                link_query,
+                root_subject_name=root_subject_name,
+                subject_name=subject_name
+            )
+        finally:
+            session.close()
     
     def _create_relationship_in_neo4j(self, subject_code: str, rel_name: str, object_code: str, properties: Dict = None):
         """Create relationship in Neo4j (match subjects by code or name)"""
@@ -92,7 +196,28 @@ class EntityService:
         finally:
             session.close()
 
-    def _derive_root_code(self, raw_value: Optional[str]) -> str:
+    def _derive_relationship_code(self, semantic_type: Optional[str], name: str) -> str:
+        """
+        Generate relationship code from semantic_type + name
+        Example: semantic_type='trophic', name='eats' -> 'TRP-EATS'
+        """
+        if not name:
+            return "UNK"
+        
+        # Clean and uppercase the name
+        name_clean = re.sub(r"[^A-Za-z0-9]", "", name.strip()).upper()
+        
+        # If semantic_type is provided, use it as prefix
+        if semantic_type:
+            type_clean = re.sub(r"[^A-Za-z0-9]", "", semantic_type.strip()).upper()
+            # Get first 3 letters of semantic type
+            type_prefix = type_clean[:3] if len(type_clean) >= 3 else type_clean
+            return f"{type_prefix}-{name_clean}"
+        
+        # If no semantic type, just return the clean name
+        return name_clean
+
+
         if not raw_value:
             return "UNK"
         value = raw_value.strip()
@@ -148,6 +273,8 @@ class EntityService:
             "name": entity.name,
             "description": entity.description,
         })
+        self._ensure_root_node()
+        self._link_root_category(entity.name)
         
         return entity
     
@@ -178,6 +305,8 @@ class EntityService:
             "name": entity.name,
             "description": entity.description,
         })
+        self._ensure_root_node()
+        self._link_root_category(entity.name)
         
         return entity
     
@@ -230,6 +359,7 @@ class EntityService:
             "level": entity.level,
             "description": entity.description,
         })
+        self._link_category_to_root(root.name if root else None, entity.name, clear_existing=True)
         
         return entity
     
@@ -269,6 +399,8 @@ class EntityService:
             "level": entity.level,
             "description": entity.description,
         })
+        root = self.pg_db.query(RootCategory).filter(RootCategory.id == entity.root_category_id).first()
+        self._link_category_to_root(root.name if root else None, entity.name, clear_existing=True)
         
         return entity
     
@@ -313,6 +445,8 @@ class EntityService:
             "description": entity.description,
             "level": entity.level,
         })
+        self._ensure_root_node()
+        self._link_root_subject(entity.name)
         
         return entity
     
@@ -345,6 +479,8 @@ class EntityService:
             "description": entity.description,
             "level": entity.level,
         })
+        self._ensure_root_node()
+        self._link_root_subject(entity.name)
         
         return entity
     
@@ -396,6 +532,7 @@ class EntityService:
             "name": entity.name,
             "description": entity.description,
         })
+        self._link_subject_to_root(root.name if root else None, entity.name, clear_existing=True)
         
         return entity
     
@@ -433,6 +570,8 @@ class EntityService:
             "name": entity.name,
             "description": entity.description,
         })
+        root = self.pg_db.query(RootSubject).filter(RootSubject.id == entity.root_subject_id).first()
+        self._link_subject_to_root(root.name if root else None, entity.name, clear_existing=True)
         
         return entity
     
@@ -455,11 +594,20 @@ class EntityService:
     
     # ==================== Relationship ====================
     def create_relationship(self, data: Dict[str, Any]) -> Relationship:
+        # Auto-generate code if not provided
+        if not data.get('code'):
+            data['code'] = self._derive_relationship_code(
+                data.get('semantic_type'),
+                data.get('name')
+            )
+        
         entity = Relationship(**data)
         self.pg_db.add(entity)
         self.pg_db.commit()
         self.pg_db.refresh(entity)
         
+        # Sync to MongoDB only (not Neo4j)
+        # Relationships in Neo4j are only created as edges when SROs are created
         self._sync_to_mongo("relationships", str(entity.id), {
             "id": entity.id,
             "code": entity.code,
@@ -467,14 +615,6 @@ class EntityService:
             "description": entity.description,
             "inverse_relationship": entity.inverse_relationship,
             "semantic_type": entity.semantic_type,
-        })
-        
-        # Note: Relationships are typically edge types in Neo4j, not nodes
-        # Store as node for reference, but actual relationships created separately
-        self._sync_to_neo4j("RelationType", str(entity.id), {
-            "code": entity.code,
-            "name": entity.name,
-            "description": entity.description,
         })
         
         return entity
@@ -484,12 +624,21 @@ class EntityService:
         if not entity:
             return None
         
+        # Auto-update code if name or semantic_type changed
+        if 'name' in data or 'semantic_type' in data:
+            new_semantic_type = data.get('semantic_type', entity.semantic_type)
+            new_name = data.get('name', entity.name)
+            # Always regenerate code when name or semantic_type changes
+            data['code'] = self._derive_relationship_code(new_semantic_type, new_name)
+        
         for key, value in data.items():
             if hasattr(entity, key):
                 setattr(entity, key, value)
         self.pg_db.commit()
         self.pg_db.refresh(entity)
         
+        # Sync to MongoDB only (not Neo4j)
+        # Relationships in Neo4j are only created as edges when SROs are created
         self._sync_to_mongo("relationships", str(entity.id), {
             "id": entity.id,
             "code": entity.code,
@@ -499,12 +648,6 @@ class EntityService:
             "semantic_type": entity.semantic_type,
         })
         
-        self._sync_to_neo4j("RelationType", str(entity.id), {
-            "code": entity.code,
-            "name": entity.name,
-            "description": entity.description,
-        })
-        
         return entity
     
     def delete_relationship(self, entity_id: int) -> bool:
@@ -512,12 +655,12 @@ class EntityService:
         if not entity:
             return False
         
-        entity_name = entity.name
         self.pg_db.delete(entity)
         self.pg_db.commit()
         
+        # Delete from MongoDB only
+        # Relationships don't exist as nodes in Neo4j (only as edges in SRO)
         self._delete_from_mongo("relationships", str(entity_id))
-        self._delete_from_neo4j("RelationType", str(entity_id), name=entity_name)
         
         return True
     

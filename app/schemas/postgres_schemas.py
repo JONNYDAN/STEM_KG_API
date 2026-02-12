@@ -91,6 +91,7 @@ class RelationshipCreate(RelationshipBase):
 
 class RelationshipResponse(RelationshipBase):
     id: int
+    code: Optional[str] = None
     created_at: datetime
     
     model_config = ConfigDict(from_attributes=True)
@@ -146,6 +147,7 @@ class SubjectUpdate(BaseModel):
 
 class RelationshipUpdate(BaseModel):
     name: Optional[str] = None
+    code: Optional[str] = None
     description: Optional[str] = None
     inverse_relationship: Optional[str] = None
     semantic_type: Optional[str] = None

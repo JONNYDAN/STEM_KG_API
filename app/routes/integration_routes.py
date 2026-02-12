@@ -305,3 +305,185 @@ def get_query_logs(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ========== SRO MANAGEMENT ENDPOINTS ==========
+
+@router.post("/sro/create")
+def create_sro_synced(
+    subject_id: int,
+    relationship_id: int,
+    object_id: int,
+    diagram_id: Optional[str] = None,
+    confidence_score: Optional[float] = None,
+    context: Optional[str] = None,
+    db: Session = Depends(get_postgres_db)
+) -> Dict[str, Any]:
+    """
+    Create Subject-Relationship-Object triple and sync to both PostgreSQL and Neo4j
+    Auto-generates code as S_R_O
+    """
+    integration_service = IntegrationService(db, None, None)
+    
+    try:
+        result = integration_service.create_sro_synced(
+            subject_id=subject_id,
+            relationship_id=relationship_id,
+            object_id=object_id,
+            diagram_id=diagram_id,
+            confidence_score=confidence_score,
+            context=context
+        )
+        
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result["errors"])
+        
+        return {
+            "success": True,
+            "message": "SRO created and synced successfully",
+            "data": result
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/sro/{sro_id}")
+def update_sro_synced(
+    sro_id: int,
+    subject_id: Optional[int] = None,
+    relationship_id: Optional[int] = None,
+    object_id: Optional[int] = None,
+    diagram_id: Optional[str] = None,
+    confidence_score: Optional[float] = None,
+    context: Optional[str] = None,
+    db: Session = Depends(get_postgres_db)
+) -> Dict[str, Any]:
+    """
+    Update Subject-Relationship-Object triple in both PostgreSQL and Neo4j
+    """
+    integration_service = IntegrationService(db, None, None)
+    
+    try:
+        result = integration_service.update_sro_synced(
+            sro_id=sro_id,
+            subject_id=subject_id,
+            relationship_id=relationship_id,
+            object_id=object_id,
+            diagram_id=diagram_id,
+            confidence_score=confidence_score,
+            context=context
+        )
+        
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result["errors"])
+        
+        return {
+            "success": True,
+            "message": "SRO updated and synced successfully",
+            "data": result
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/sro/{sro_id}")
+def delete_sro_synced(
+    sro_id: int,
+    db: Session = Depends(get_postgres_db)
+) -> Dict[str, Any]:
+    """
+    Delete Subject-Relationship-Object triple from both PostgreSQL and Neo4j
+    """
+    integration_service = IntegrationService(db, None, None)
+    
+    try:
+        result = integration_service.delete_sro_synced(sro_id)
+        
+        if not result["success"]:
+            raise HTTPException(status_code=404, detail=result["errors"])
+        
+        return {
+            "success": True,
+            "message": "SRO deleted successfully",
+            "data": result
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/sro/list")
+def get_all_sros_with_details(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    db: Session = Depends(get_postgres_db)
+) -> Dict[str, Any]:
+    """
+    Get all SROs with full details (subject name, relationship name, object name, codes)
+    """
+    integration_service = IntegrationService(db, None, None)
+    
+    try:
+        result = integration_service.get_all_sros_with_details(skip=skip, limit=limit)
+        
+        return {
+            "success": True,
+            "total": len(result),
+            "skip": skip,
+            "limit": limit,
+            "data": result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/sro/{sro_id}")
+def get_sro_details(
+    sro_id: int,
+    db: Session = Depends(get_postgres_db)
+) -> Dict[str, Any]:
+    """
+    Get single SRO with full details
+    """
+    postgres_service = PostgresService(db)
+    
+    try:
+        sro = postgres_service.get_sro(sro_id)
+        if not sro:
+            raise HTTPException(status_code=404, detail="SRO not found")
+        
+        subject = postgres_service.get_subject(sro.subject_id)
+        relationship = postgres_service.get_relationship(sro.relationship_id)
+        obj = postgres_service.get_subject(sro.object_id)
+        
+        code = f"{subject.code}_{relationship.code}_{obj.code}"
+        
+        return {
+            "success": True,
+            "data": {
+                "id": sro.id,
+                "code": code,
+                "subject_id": sro.subject_id,
+                "subject_name": subject.name,
+                "subject_code": subject.code,
+                "relationship_id": sro.relationship_id,
+                "relationship_name": relationship.name,
+                "relationship_code": relationship.code,
+                "object_id": sro.object_id,
+                "object_name": obj.name,
+                "object_code": obj.code,
+                "diagram_id": sro.diagram_id,
+                "confidence_score": float(sro.confidence_score) if sro.confidence_score else None,
+                "context": sro.context,
+                "created_at": sro.created_at.isoformat() if sro.created_at else None
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
