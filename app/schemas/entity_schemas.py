@@ -87,9 +87,9 @@ class SubjectResponse(BaseModel):
     code: Optional[str] = None
     name: str
     root_subject_id: Optional[int] = None
-    synonyms: Optional[Any] = None
+    synonyms: Optional[List[str]] = None
     description: Optional[str] = None
-    categories: Optional[Any] = None
+    categories: Optional[List[str]] = None
     created_at: Optional[datetime] = None
 
     class Config:
@@ -122,6 +122,13 @@ class RelationshipResponse(BaseModel):
 class DiagramCreate(BaseModel):
     id: str
     category_id: Optional[int] = None
+    root_category_id: Optional[str] = None
+    category_name: Optional[str] = None
+    root_category_name: Optional[str] = None
+    file_name: Optional[str] = None
+    mime_type: Optional[str] = None
+    file_size: Optional[int] = None
+    trigger_code: Optional[str] = None
     image_path: Optional[str] = None
     processed: Optional[bool] = False
     diagram_metadata: Optional[Any] = None
@@ -130,10 +137,18 @@ class DiagramCreate(BaseModel):
 class DiagramResponse(BaseModel):
     id: str
     category_id: Optional[int] = None
+    root_category_id: Optional[str] = None
+    category_name: Optional[str] = None
+    root_category_name: Optional[str] = None
+    file_name: Optional[str] = None
+    mime_type: Optional[str] = None
+    file_size: Optional[int] = None
+    trigger_code: Optional[str] = None
     image_path: Optional[str] = None
     processed: Optional[bool] = None
     diagram_metadata: Optional[Any] = None
     created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

@@ -2,9 +2,9 @@
 Entity Management Routes
 CRUD endpoints for all entities with tri-database synchronization
 """
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 
 from app.database.postgres_conn import get_postgres_db
 from app.services.entity_service import EntityService
@@ -195,8 +195,40 @@ def delete_relationship(entity_id: int, service: EntityService = Depends(get_ent
 # ==================== Diagram ====================
 @router.post("/diagrams", response_model=DiagramResponse)
 def create_diagram(payload: DiagramCreate, service: EntityService = Depends(get_entity_service)):
-    entity = service.create_diagram(payload.model_dump())
-    return DiagramResponse.model_validate(entity)
+    try:
+        entity = service.create_diagram(payload.model_dump())
+        return DiagramResponse.model_validate(entity)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/diagrams/upload", response_model=DiagramResponse)
+async def upload_diagram(
+    root_category_id: str = Form(...),
+    category_name: str = Form(...),
+    category_id: Optional[int] = Form(None),
+    diagram_id: Optional[str] = Form(None),
+    processed: bool = Form(True),
+    image: UploadFile = File(...),
+    service: EntityService = Depends(get_entity_service),
+):
+    try:
+        content = await image.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="Uploaded image is empty")
+        entity = service.upload_diagram_image(
+            original_filename=image.filename or "",
+            file_content=content,
+            content_type=image.content_type,
+            root_category_id=root_category_id,
+            category_name=category_name,
+            category_id=category_id,
+            diagram_id=diagram_id,
+            processed=processed,
+        )
+        return DiagramResponse.model_validate(entity)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.get("/diagrams", response_model=List[DiagramResponse])
@@ -207,7 +239,10 @@ def get_diagrams(service: EntityService = Depends(get_entity_service)):
 
 @router.put("/diagrams/{entity_id}", response_model=DiagramResponse)
 def update_diagram(entity_id: str, payload: DiagramCreate, service: EntityService = Depends(get_entity_service)):
-    entity = service.update_diagram(entity_id, payload.model_dump(exclude_unset=True))
+    try:
+        entity = service.update_diagram(entity_id, payload.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     if not entity:
         raise HTTPException(status_code=404, detail="Diagram not found")
     return DiagramResponse.model_validate(entity)

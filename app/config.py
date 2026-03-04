@@ -33,7 +33,7 @@ class Config:
 
     # Uploads
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    UPLOAD_DIR = os.getenv("UPLOAD_DIR", os.path.join(BASE_DIR, "images", "uploads"))
+    UPLOAD_DIR = os.getenv("UPLOAD_DIR", os.path.join(BASE_DIR, "images"))
 
     # Auth
     JWT_SECRET = os.getenv("JWT_SECRET", "stem_kg_secret")

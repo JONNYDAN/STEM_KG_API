@@ -26,6 +26,7 @@ Base.metadata.create_all(bind=engine)
 
 # Static files for uploads
 os.makedirs(config.UPLOAD_DIR, exist_ok=True)
+app.mount("/images", StaticFiles(directory=config.UPLOAD_DIR), name="images")
 app.mount("/uploads", StaticFiles(directory=config.UPLOAD_DIR), name="uploads")
 
 # CORS middleware

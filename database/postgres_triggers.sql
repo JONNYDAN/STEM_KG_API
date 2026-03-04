@@ -58,12 +58,40 @@ EXECUTE FUNCTION trg_categories_code();
 
 CREATE UNIQUE INDEX IF NOT EXISTS ux_categories_code ON categories(code);
 
--- 3) Diagrams: DGM-{category}-{sequence}
-CREATE OR REPLACE FUNCTION trg_diagrams_id()
+-- 3) Diagrams: enrich schema + auto trigger code
+ALTER TABLE diagrams
+    ADD COLUMN IF NOT EXISTS root_category_id VARCHAR(50),
+    ADD COLUMN IF NOT EXISTS category_name VARCHAR(150),
+    ADD COLUMN IF NOT EXISTS root_category_name VARCHAR(150),
+    ADD COLUMN IF NOT EXISTS file_name VARCHAR(255),
+    ADD COLUMN IF NOT EXISTS mime_type VARCHAR(100),
+    ADD COLUMN IF NOT EXISTS file_size INTEGER,
+    ADD COLUMN IF NOT EXISTS trigger_code VARCHAR(100),
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE constraint_name = 'fk_diagrams_root_category'
+          AND table_name = 'diagrams'
+    ) THEN
+        ALTER TABLE diagrams
+            ADD CONSTRAINT fk_diagrams_root_category
+            FOREIGN KEY (root_category_id) REFERENCES root_categories(id);
+    END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION trg_diagrams_prepare()
 RETURNS TRIGGER AS $$
 DECLARE
     cat_code TEXT;
     seq INTEGER;
+    raw_id TEXT;
+    root_code TEXT;
+    category_code TEXT;
 BEGIN
     IF NEW.id IS NULL OR NEW.id = '' THEN
         SELECT c.code INTO cat_code
@@ -74,15 +102,44 @@ BEGIN
         seq := next_code_value(format('DGM-%s', cat_code));
         NEW.id := format('DGM-%s-%s', cat_code, lpad(seq::TEXT, 3, '0'));
     END IF;
+
+    IF NEW.file_name IS NULL OR NEW.file_name = '' THEN
+        NEW.file_name := NEW.id;
+    END IF;
+
+    IF NEW.trigger_code IS NULL OR NEW.trigger_code = '' THEN
+        raw_id := upper(regexp_replace(COALESCE(NEW.id, ''), '[^A-Za-z0-9]', '', 'g'));
+        IF raw_id = '' THEN
+            raw_id := 'UNKNOWN';
+        END IF;
+
+        root_code := upper(substr(regexp_replace(COALESCE(NEW.root_category_id, 'UNK'), '[^A-Za-z0-9]', '', 'g'), 1, 3));
+        IF length(root_code) < 3 THEN
+            root_code := rpad(root_code, 3, 'K');
+        END IF;
+
+        category_code := upper(substr(regexp_replace(COALESCE(NEW.category_name, 'UNKN'), '[^A-Za-z0-9]', '', 'g'), 1, 4));
+        IF length(category_code) < 4 THEN
+            category_code := rpad(category_code, 4, 'N');
+        END IF;
+
+        NEW.trigger_code := format('TRG-%s-%s-%s', root_code, category_code, substr(raw_id, 1, 8));
+    END IF;
+
+    NEW.updated_at := NOW();
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS diagrams_id_trigger ON diagrams;
-CREATE TRIGGER diagrams_id_trigger
-BEFORE INSERT ON diagrams
+DROP TRIGGER IF EXISTS diagrams_prepare_trigger ON diagrams;
+CREATE TRIGGER diagrams_prepare_trigger
+BEFORE INSERT OR UPDATE ON diagrams
 FOR EACH ROW
-EXECUTE FUNCTION trg_diagrams_id();
+EXECUTE FUNCTION trg_diagrams_prepare();
+
+CREATE INDEX IF NOT EXISTS idx_diagrams_root_category_id ON diagrams(root_category_id);
+CREATE INDEX IF NOT EXISTS idx_diagrams_category_name ON diagrams(category_name);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_diagrams_trigger_code ON diagrams(trigger_code);
 
 -- 4) Subjects (Objects): OBJ-{type}-{hash}
 ALTER TABLE subjects

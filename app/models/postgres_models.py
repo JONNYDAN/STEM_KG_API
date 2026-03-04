@@ -48,12 +48,21 @@ class Diagram(Base):
     
     id = Column(String(50), primary_key=True)
     category_id = Column(Integer, ForeignKey("categories.id"))
+    root_category_id = Column(String(50), ForeignKey("root_categories.id"), nullable=True)
+    category_name = Column(String(150), nullable=True)
+    root_category_name = Column(String(150), nullable=True)
+    file_name = Column(String(255), nullable=True)
+    mime_type = Column(String(100), nullable=True)
+    file_size = Column(Integer, nullable=True)
+    trigger_code = Column(String(100), nullable=True)
     image_path = Column(String(500))
     processed = Column(Boolean, default=False)
     diagram_metadata = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     
     category = orm_relationship("Category", back_populates="diagrams")
+    root_category = orm_relationship("RootCategory")
 
 class RootSubject(Base):
     __tablename__ = "root_subjects"

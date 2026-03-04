@@ -58,3 +58,22 @@ curl -X POST "http://localhost:8000/api/postgres/root-categories/" \
 
 # Tìm kiếm theo category
 curl "http://localhost:8000/api/integration/search/category/foodChainsWebs"
+
+# Diagram upload & sync (Entity Management)
+
+- Upload endpoint: `POST /api/entities/diagrams/upload` (multipart/form-data)
+- Required fields: `root_category_id`, `category_name`, `image`
+- Optional fields: `category_id`, `diagram_id`, `processed`
+- Image files are stored in API folder `app/images` and served via `/images/{file_name}`
+- On upload, diagram is upserted in PostgreSQL and synchronized to MongoDB
+- Neo4j behavior for Diagram: only `MATCH (d:Diagram {id: ...}) SET ...` (no new node creation)
+
+Example:
+
+```bash
+curl -X POST "http://localhost:8000/api/entities/diagrams/upload" \
+  -F "root_category_id=Earth_Geological_Sciences" \
+  -F "category_name=partsOfTheEarth" \
+  -F "diagram_id=1701.png" \
+  -F "image=@/path/to/1701.png"
+```
