@@ -29,11 +29,12 @@ class Config:
     API_PREFIX = "/api"
 
     # OCR Model API
-    MODEL_OCR_URL = os.getenv("MODEL_OCR_URL", "http://localhost:5000/api/analyze")
+    MODEL_OCR_URL = os.getenv("MODEL_OCR_URL", "http://localhost:5000/api/analyze_intent")
 
     # Uploads
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    UPLOAD_DIR = os.getenv("UPLOAD_DIR", os.path.join(BASE_DIR, "images"))
+    IMAGE_DIR = os.getenv("IMAGE_DIR", os.path.join(BASE_DIR, "images"))
+    UPLOAD_DIR = os.getenv("UPLOAD_DIR", os.path.join(IMAGE_DIR, "uploads"))
 
     # Auth
     JWT_SECRET = os.getenv("JWT_SECRET", "stem_kg_secret")

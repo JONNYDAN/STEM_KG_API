@@ -1,10 +1,12 @@
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form, Depends
 from typing import Dict, Any, List, Optional
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 import os
 import re
 import uuid
 import requests
+import unicodedata
 from datetime import datetime
 
 from app.services.integration_service import IntegrationService
@@ -12,13 +14,604 @@ from app.database.postgres_conn import get_postgres_db
 from app.services.postgres_service import PostgresService
 from app.services.neo4j_service import Neo4jService
 from app.services.mongo_service import MongoService
+from app.schemas import postgres_schemas as postgres_schemas
+from app.schemas.mongo_schemas import SemanticRelationshipCreate
 from app.config import config
 
 router = APIRouter(prefix="/integration", tags=["Integration"])
 
+VI_EN_PHRASE_MAP = {
+    "hay cho toi biet": "tell me",
+    "cho toi biet": "tell me",
+    "la gi": "what is",
+    "nam o dau": "where located",
+    "o dau": "where",
+    "vong doi": "life cycle",
+    "ech": "frog",
+    "trung": "egg",
+    "nong noc": "tadpole",
+    "ech con": "froglet",
+    "proton": "proton",
+    "neutron": "neutron",
+    "electron": "electron",
+    "hat nhan": "nucleus",
+    "nguyen tu": "atom",
+}
+
+VI_FILLER_WORDS = {
+    "hay", "toi", "cho", "biet", "duoc", "khong", "voi", "ve", "mot", "nhung", "cac",
+    "la", "gi", "o", "dau", "nam", "tai", "the", "nao", "xin", "vui", "long"
+}
+
+EN_FILLER_WORDS = {
+    "tell", "me", "what", "is", "where", "located", "about", "please", "show", "explain",
+    "the", "a", "an", "of", "to", "in", "for", "on", "and",
+    "can", "could", "would", "you", "your", "how", "works", "work", "does", "do"
+}
+
+GENERIC_SUBJECT_TERMS = {
+    "life", "cycle", "diagram", "process", "stage", "stages", "system", "overview", "related", "query"
+}
+
+SUBJECT_SPELLING_NORMALIZATION = {
+    "laydybug": "ladybug",
+    "lady bug": "ladybug",
+    "bo rua": "ladybug",
+    "chuon chuon": "dragonfly",
+}
+
+
+def _strip_accents(text: str) -> str:
+    value = "".join(c for c in unicodedata.normalize("NFD", text or "") if unicodedata.category(c) != "Mn")
+    return value.replace("đ", "d").replace("Đ", "D")
+
+
+def _normalize_prompt_to_english(prompt: str) -> str:
+    raw = (prompt or "").strip().lower()
+    raw = re.sub(r"[^\w\s]", " ", raw)
+    raw = re.sub(r"\s+", " ", raw).strip()
+
+    no_accent = _strip_accents(raw)
+    translated = no_accent
+    for vi_phrase, en_phrase in sorted(VI_EN_PHRASE_MAP.items(), key=lambda item: len(item[0]), reverse=True):
+        translated = re.sub(rf"\b{re.escape(vi_phrase)}\b", en_phrase, translated)
+
+    translated = re.sub(r"\s+", " ", translated).strip()
+    if not translated:
+        return ""
+
+    tokens = [
+        token for token in translated.split()
+        if token not in VI_FILLER_WORDS
+    ]
+    return " ".join(tokens)
+
+
+def _extract_keyword_candidates(normalized_en_prompt: str) -> List[str]:
+    tokens = [
+        token for token in (normalized_en_prompt or "").split()
+        if token and token not in EN_FILLER_WORDS and len(token) >= 3
+    ]
+
+    if not tokens:
+        return []
+
+    candidates = [" ".join(tokens)]
+    for size in [3, 2, 1]:
+        if len(tokens) < size:
+            continue
+        for i in range(len(tokens) - size + 1):
+            candidates.append(" ".join(tokens[i:i + size]))
+
+    return list(dict.fromkeys(candidates))
+
+
+def _extract_subject_term(normalized_en_prompt: str) -> str:
+    tokens = [
+        token for token in (normalized_en_prompt or "").split()
+        if token and token not in EN_FILLER_WORDS
+    ]
+    if not tokens:
+        return ""
+    if len(tokens) == 1:
+        return tokens[0]
+    return " ".join(tokens)
+
+
+def _extract_subject_candidates(normalized_en_prompt: str) -> List[str]:
+    term = _extract_subject_term(normalized_en_prompt)
+    if not term:
+        return []
+
+    tokens = [token for token in term.split() if token]
+    normalized_tokens = [SUBJECT_SPELLING_NORMALIZATION.get(token, token) for token in tokens]
+
+    specific_tokens = [
+        token for token in normalized_tokens
+        if len(token) >= 3 and token not in EN_FILLER_WORDS and token not in GENERIC_SUBJECT_TERMS
+    ]
+
+    candidates: List[str] = []
+    candidates.extend(specific_tokens)
+
+    # Keep useful bigrams only when at least one token is specific (e.g., "ladybug cycle").
+    for size in [2]:
+        if len(normalized_tokens) < size:
+            continue
+        for i in range(len(normalized_tokens) - size + 1):
+            gram_tokens = normalized_tokens[i:i + size]
+            if all(token in GENERIC_SUBJECT_TERMS for token in gram_tokens):
+                continue
+            phrase = " ".join(gram_tokens)
+            candidates.append(phrase)
+
+    normalized_term = " ".join(normalized_tokens)
+    if normalized_term and not all(token in GENERIC_SUBJECT_TERMS for token in normalized_tokens):
+        candidates.append(normalized_term)
+
+    return list(dict.fromkeys([candidate for candidate in candidates if candidate]))
+
+
+def _is_valid_subject_candidate(term: str) -> bool:
+    normalized = _normalize_label(term)
+    if not normalized:
+        return False
+    tokens = [token for token in normalized.split() if token]
+    if not tokens:
+        return False
+
+    informative_tokens = [
+        token for token in tokens
+        if token not in EN_FILLER_WORDS and token not in GENERIC_SUBJECT_TERMS and len(token) >= 4
+    ]
+    return bool(informative_tokens)
+
+
+def _collect_diagrams_from_categories(postgres_service: PostgresService, category_ids: List[int], max_diagrams: int = 500) -> List[Dict[str, Any]]:
+    diagrams: List[Dict[str, Any]] = []
+    diagram_seen = set()
+
+    for category_id in category_ids:
+        for diagram in postgres_service.get_diagrams_by_category(category_id):
+            if diagram.id in diagram_seen:
+                continue
+            diagram_seen.add(diagram.id)
+            diagrams.append(
+                {
+                    "diagram_id": diagram.id,
+                    "image_path": diagram.image_path,
+                    "category_id": diagram.category_id,
+                }
+            )
+            if len(diagrams) >= max_diagrams:
+                return diagrams
+
+    return diagrams
+
+
+def _first_diagram(diagrams: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not diagrams:
+        return []
+    return [diagrams[0]]
+
 
 def _normalize_label(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+def _safe_terms(values: Optional[List[str]]) -> List[str]:
+    terms = []
+    for value in values or []:
+        normalized = _normalize_label(value)
+        if normalized:
+            terms.append(normalized)
+    return list(dict.fromkeys(terms))
+
+
+def _collect_annotation_terms(annotation: Any) -> List[str]:
+    terms: List[str] = []
+    if isinstance(annotation, dict):
+        for key, value in annotation.items():
+            if key.lower() in {"label", "labels", "text", "name", "title", "translated_text", "original_text"}:
+                if isinstance(value, list):
+                    terms.extend([str(item) for item in value if item])
+                elif value:
+                    terms.append(str(value))
+            else:
+                terms.extend(_collect_annotation_terms(value))
+    elif isinstance(annotation, list):
+        for item in annotation:
+            terms.extend(_collect_annotation_terms(item))
+    return terms
+
+
+def _diagram_matches_subjects(diagram_id: str, subject_terms: List[str], mongo_service: MongoService) -> bool:
+    if not subject_terms:
+        return True
+    annotations = mongo_service.get_annotations_by_diagram(diagram_id)
+    if not annotations:
+        return False
+
+    flattened_terms = _safe_terms(_collect_annotation_terms(annotations))
+    return any(
+        subject_term in term or term in subject_term
+        for subject_term in subject_terms
+        for term in flattened_terms
+    )
+
+
+def _diagram_lookup_keys(diagram: Dict[str, Any]) -> List[str]:
+    keys: List[str] = []
+
+    diagram_id = str(diagram.get("diagram_id") or "").strip().lower()
+    if diagram_id:
+        keys.append(diagram_id)
+        keys.append(re.sub(r"\.(png|jpg|jpeg|webp)$", "", diagram_id))
+
+    image_path = str(diagram.get("image_path") or "").strip().lower()
+    if image_path:
+        image_name = os.path.basename(image_path)
+        keys.append(image_name)
+        keys.append(re.sub(r"\.(png|jpg|jpeg|webp)$", "", image_name))
+
+    cleaned = [key for key in keys if key]
+    return list(dict.fromkeys(cleaned))
+
+
+def _select_by_neo4j_textlabels(
+    neo4j_service: Neo4jService,
+    diagrams: List[Dict[str, Any]],
+    subject_terms: List[str],
+    normalized_query_text: Optional[str],
+    category_name: Optional[str],
+) -> List[Dict[str, Any]]:
+    if not diagrams:
+        return []
+
+    term_candidates = _safe_terms(subject_terms)
+    term_candidates.extend(_derive_subject_terms_from_text(normalized_query_text or ""))
+    term_candidates = list(dict.fromkeys([term for term in term_candidates if term]))
+    if not term_candidates:
+        return []
+
+    diagram_key_map: Dict[str, str] = {}
+    lookup_keys: List[str] = []
+    for diagram in diagrams:
+        canonical_id = str(diagram.get("diagram_id") or "").strip()
+        for key in _diagram_lookup_keys(diagram):
+            diagram_key_map[key] = canonical_id
+            lookup_keys.append(key)
+    lookup_keys = list(dict.fromkeys([key for key in lookup_keys if key]))
+    if not lookup_keys:
+        return []
+
+    cypher = """
+    UNWIND $keys AS lookup_key
+    MATCH (tl)
+    WHERE (
+            any(lbl IN labels(tl) WHERE toLower(lbl) = 'textlabel')
+            OR toLower(coalesce(tl.type, '')) IN ['text_label', 'textlabel']
+        )
+        AND (
+            toLower(coalesce(tl.diagram_id, tl.diagramId, tl.image_id, tl.imageId, '')) = lookup_key
+            OR replace(toLower(coalesce(tl.diagram_id, tl.diagramId, tl.image_id, tl.imageId, '')), '.png', '') = lookup_key
+            OR replace(toLower(coalesce(tl.diagram_id, tl.diagramId, tl.image_id, tl.imageId, '')), '.jpg', '') = lookup_key
+            OR replace(toLower(coalesce(tl.diagram_id, tl.diagramId, tl.image_id, tl.imageId, '')), '.jpeg', '') = lookup_key
+        )
+    RETURN coalesce(tl.diagram_id, tl.diagramId, tl.image_id, tl.imageId, '') AS diagram_id,
+                 coalesce(tl.value, tl.text, tl.label, tl.name, '') AS value,
+                 coalesce(tl.replacement_text, tl.replacementText, '') AS replacement_text,
+                 coalesce(tl.category, tl.category_name, tl.categoryName, '') AS category
+    """
+
+    try:
+        records = neo4j_service.session.run(cypher, keys=lookup_keys)
+    except Exception:
+        return []
+
+    diagram_scores: Dict[str, float] = {}
+    normalized_category = _normalize_label(category_name or "")
+    for record in records:
+        diagram_id_raw = _normalize_label(record.get("diagram_id", ""))
+        key = re.sub(r"\.(png|jpg|jpeg|webp)$", "", diagram_id_raw)
+        canonical_id = diagram_key_map.get(diagram_id_raw) or diagram_key_map.get(key)
+        if not canonical_id:
+            continue
+
+        text_blob = _normalize_label(f"{record.get('value', '')} {record.get('replacement_text', '')}")
+        if not text_blob:
+            continue
+
+        score = 0.0
+        for term in term_candidates:
+            if term in text_blob:
+                score += 3.0
+            elif any(token in text_blob for token in term.split() if len(token) >= 3):
+                score += 1.0
+
+        label_category = _normalize_label(record.get("category", ""))
+        if normalized_category and label_category and normalized_category in label_category:
+            score += 2.0
+
+        if score <= 0:
+            continue
+        diagram_scores[canonical_id] = diagram_scores.get(canonical_id, 0.0) + score
+
+    if not diagram_scores:
+        return []
+
+    ranked = sorted(diagrams, key=lambda item: diagram_scores.get(str(item.get("diagram_id")), 0.0), reverse=True)
+    top = ranked[0]
+    if diagram_scores.get(str(top.get("diagram_id")), 0.0) <= 0:
+        return []
+    return [top]
+
+
+def _search_diagrams_by_subject_textlabels_global(
+    neo4j_service: Neo4jService,
+    postgres_service: PostgresService,
+    subject_terms: List[str],
+    normalized_query_text: Optional[str],
+    limit: int = 5,
+) -> List[Dict[str, Any]]:
+    terms = _safe_terms(subject_terms)
+    terms.extend(_derive_subject_terms_from_text(normalized_query_text or ""))
+    terms = [term for term in list(dict.fromkeys(terms)) if term and term not in GENERIC_SUBJECT_TERMS]
+    if not terms:
+        return []
+
+    cypher = """
+    MATCH (tl)
+    WHERE (
+        any(lbl IN labels(tl) WHERE toLower(lbl) = 'textlabel')
+        OR toLower(coalesce(tl.type, '')) IN ['text_label', 'textlabel']
+    )
+    WITH tl,
+         toLower(trim(coalesce(tl.diagram_id, tl.diagramId, tl.image_id, tl.imageId, ''))) AS diagram_id,
+         toLower(trim(
+            coalesce(tl.value, '') + ' ' +
+            coalesce(tl.replacement_text, '') + ' ' +
+            coalesce(tl.text, '') + ' ' +
+            coalesce(tl.label, '') + ' ' +
+            coalesce(tl.name, '')
+         )) AS text_blob
+    WHERE diagram_id <> '' AND text_blob <> ''
+    RETURN diagram_id, text_blob
+    """
+
+    try:
+        records = neo4j_service.session.run(cypher)
+    except Exception:
+        return []
+
+    query_blob = _normalize_label(normalized_query_text or "")
+    scored: Dict[str, float] = {}
+    for record in records:
+        diagram_id_raw = _normalize_label(record.get("diagram_id", ""))
+        text_blob = _normalize_label(record.get("text_blob", ""))
+        if not diagram_id_raw or not text_blob:
+            continue
+
+        score = 0.0
+        for term in terms:
+            if term in text_blob:
+                score += 4.0
+            else:
+                term_tokens = [token for token in term.split() if len(token) >= 3 and token not in GENERIC_SUBJECT_TERMS]
+                score += sum(1.0 for token in term_tokens if token in text_blob)
+
+        if query_blob and query_blob in text_blob:
+            score += 3.0
+
+        if score <= 0:
+            continue
+        scored[diagram_id_raw] = max(scored.get(diagram_id_raw, 0.0), score)
+
+    if not scored:
+        return []
+
+    ranked_ids = sorted(scored.keys(), key=lambda diagram_id: scored[diagram_id], reverse=True)[: max(1, limit)]
+    results: List[Dict[str, Any]] = []
+    for raw_id in ranked_ids:
+        candidates = [raw_id]
+        if not re.search(r"\.(png|jpg|jpeg|webp)$", raw_id):
+            candidates.extend([f"{raw_id}.png", f"{raw_id}.jpg", f"{raw_id}.jpeg", f"{raw_id}.webp"])
+
+        matched = None
+        for candidate_id in candidates:
+            diagram = postgres_service.get_diagram(candidate_id)
+            if diagram:
+                matched = {
+                    "diagram_id": diagram.id,
+                    "image_path": diagram.image_path,
+                    "category_id": diagram.category_id,
+                }
+                break
+
+        if matched:
+            results.append(matched)
+
+    return results
+
+
+def _select_best_diagram_by_category_and_subject(
+    postgres_service: PostgresService,
+    neo4j_service: Neo4jService,
+    mongo_service: MongoService,
+    category_ids: List[int],
+    subject_terms: List[str],
+    normalized_query_text: Optional[str] = None,
+    category_name: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    diagrams = _collect_diagrams_from_categories(postgres_service, category_ids, max_diagrams=500)
+    if not diagrams:
+        return []
+
+    ranked_by_labels = _select_by_neo4j_textlabels(
+        neo4j_service,
+        diagrams,
+        subject_terms,
+        normalized_query_text,
+        category_name,
+    )
+    if ranked_by_labels:
+        return ranked_by_labels
+
+    if not subject_terms:
+        return _first_diagram(diagrams)
+
+    for diagram in diagrams:
+        if _diagram_matches_subjects(diagram.get("diagram_id"), subject_terms, mongo_service):
+            return [diagram]
+
+    # Strict subject-aware behavior: if a subject was provided but no evidence found
+    # in Neo4j TextLabel/Mongo annotation, do not fall back to an unrelated first diagram.
+    return []
+
+
+def _create_video_recommendations(category_name: Optional[str], subject_terms: List[str], query_text: Optional[str]) -> List[Dict[str, str]]:
+    topic_parts = []
+    if category_name:
+        topic_parts.append(category_name)
+    if subject_terms:
+        topic_parts.append(subject_terms[0])
+    if query_text:
+        topic_parts.append(query_text)
+
+    topic = " ".join([part for part in topic_parts if part]).strip() or "stem science education"
+    query = re.sub(r"\s+", " ", topic).strip().replace(" ", "+")
+    return [
+        {
+            "title": f"YouTube recommendation for {topic}",
+            "url": f"https://www.youtube.com/results?search_query={query}",
+        }
+    ]
+
+
+def _build_final_output(
+    matched_diagrams: List[Dict[str, Any]],
+    descriptions: List[str],
+    category_name: Optional[str],
+    subject_terms: List[str],
+    query_text: Optional[str],
+) -> Dict[str, Any]:
+    base_description = " ".join([desc for desc in descriptions if desc]).strip()
+    if not base_description:
+        focus = subject_terms[0] if subject_terms else (category_name or "the requested STEM concept")
+        base_description = f"This STEM diagram explains {focus} with visual relationships for easier learning."
+
+    return {
+        "diagram": matched_diagrams[0] if matched_diagrams else None,
+        "description": base_description,
+        "video_recommendations": _create_video_recommendations(category_name, subject_terms, query_text),
+    }
+
+
+def _derive_subject_terms_from_text(normalized_en_text: str) -> List[str]:
+    if not normalized_en_text:
+        return []
+    tokens = [
+        token for token in _normalize_label(normalized_en_text).split()
+        if token and token not in EN_FILLER_WORDS and token not in GENERIC_SUBJECT_TERMS and len(token) >= 3
+    ]
+    return list(dict.fromkeys(tokens))
+
+
+def _slugify_identifier(value: str, fallback: str = "autolearned") -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9]+", "_", (value or "").strip().lower()).strip("_")
+    return cleaned[:50] if cleaned else fallback
+
+
+def _find_category_by_name(postgres_service: PostgresService, category_name: str) -> Optional[Any]:
+    target = _normalize_label(category_name)
+    if not target:
+        return None
+    categories = postgres_service.get_all_categories(skip=0, limit=10000)
+    for category in categories:
+        if _normalize_label(category.name) == target:
+            return category
+    return None
+
+
+def _find_root_subject_by_name(postgres_service: PostgresService, root_subject_name: str) -> Optional[Any]:
+    target = _normalize_label(root_subject_name)
+    if not target:
+        return None
+    roots = postgres_service.get_all_root_subjects(skip=0, limit=10000)
+    for root_subject in roots:
+        if _normalize_label(root_subject.name) == target:
+            return root_subject
+    return None
+
+
+def _find_subject_exact(postgres_service: PostgresService, subject_name: str) -> Optional[Any]:
+    target = _normalize_label(subject_name)
+    if not target:
+        return None
+    candidates = postgres_service.search_subjects(name=subject_name)
+    for subject in candidates:
+        if _normalize_label(subject.name) == target:
+            return subject
+    return None
+
+
+def _collect_subject_names_from_pending(pending_item: Dict[str, Any]) -> List[str]:
+    result: List[str] = []
+    model_output = pending_item.get("model_output") or {}
+
+    for candidate in model_output.get("subject_candidates", []) or []:
+        name = candidate.get("subject_name") if isinstance(candidate, dict) else None
+        if name:
+            result.append(str(name))
+
+    for label in model_output.get("detected_labels", []) or []:
+        if label:
+            result.append(str(label))
+
+    for triple in model_output.get("sro_candidates", []) or []:
+        if isinstance(triple, dict):
+            if triple.get("subject"):
+                result.append(str(triple.get("subject")))
+            if triple.get("object"):
+                result.append(str(triple.get("object")))
+
+    for triple in pending_item.get("triples", []) or []:
+        if isinstance(triple, dict):
+            if triple.get("subject"):
+                result.append(str(triple.get("subject")))
+            if triple.get("object"):
+                result.append(str(triple.get("object")))
+
+    normalized = [_normalize_label(item) for item in result if item and _normalize_label(item)]
+    return list(dict.fromkeys(normalized))
+
+
+def _collect_relationship_from_pending(pending_item: Dict[str, Any]) -> str:
+    model_output = pending_item.get("model_output") or {}
+    for triple in model_output.get("sro_candidates", []) or []:
+        if isinstance(triple, dict) and triple.get("relationship"):
+            return _normalize_label(str(triple.get("relationship")))
+
+    for triple in pending_item.get("triples", []) or []:
+        if isinstance(triple, dict) and triple.get("relationship"):
+            return _normalize_label(str(triple.get("relationship")))
+
+    return "related_to"
+
+
+class PendingLearningApprovalRequest(BaseModel):
+    approved_by: Optional[str] = None
+    category_name: Optional[str] = None
+    root_subject_name: Optional[str] = None
+    relationship_name: Optional[str] = None
+    subject_names: Optional[List[str]] = None
+    note: Optional[str] = None
+
+
+class PendingLearningRejectRequest(BaseModel):
+    rejected_by: Optional[str] = None
+    reason: Optional[str] = None
+    note: Optional[str] = None
 
 
 def _parse_triple_from_text(text: str) -> Optional[Dict[str, str]]:
@@ -110,15 +703,18 @@ def _query_databases(
                 "category_id": diagram.category_id
             })
 
+    merged_diagrams = list({d["diagram_id"]: d for d in (postgres_diagrams + neo4j_diagrams)}.values())
+    one_diagram = _first_diagram(merged_diagrams)
+
     return {
         "postgres": {
             "categories": postgres_results,
-            "diagrams": postgres_diagrams
+            "diagrams": _first_diagram(postgres_diagrams)
         },
         "neo4j": neo4j_results,
         "mongo": mongo_annotations,
         "descriptions": list(dict.fromkeys(descriptions)),
-        "diagrams": list({d["diagram_id"]: d for d in (postgres_diagrams + neo4j_diagrams)}.values())
+        "diagrams": one_diagram
     }
 
 @router.get("/search/triple")
@@ -204,66 +800,357 @@ def query_stem_multimedia(
     saved_image_url: Optional[str] = None
     model_output: Optional[Dict[str, Any]] = None
     triples: List[Dict[str, str]] = []
+    normalized_query_text: Optional[str] = None
+    routing_mode: Optional[str] = None
+    pending_learning_item: Optional[Dict[str, Any]] = None
+    final_output: Optional[Dict[str, Any]] = None
+    phase: Optional[str] = None
 
     try:
+        model_files = None
+        model_data: Dict[str, Any] = {}
+
+        if query_text:
+            model_data["query_text"] = query_text
+
         if image:
             os.makedirs(config.UPLOAD_DIR, exist_ok=True)
             extension = os.path.splitext(image.filename or "")[1] or ".png"
             filename = f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex}{extension}"
             saved_image_path = os.path.join(config.UPLOAD_DIR, filename)
-            saved_image_url = f"/uploads/{filename}"
+            saved_image_url = f"/images/uploads/{filename}"
 
             image_bytes = image.file.read()
             with open(saved_image_path, "wb") as f:
                 f.write(image_bytes)
+            model_files = {
+                "image": (image.filename, image_bytes, image.content_type or "application/octet-stream")
+            }
 
-            try:
-                response = requests.post(
-                    config.MODEL_OCR_URL,
-                    files={"image": (image.filename, image_bytes, image.content_type or "application/octet-stream")},
-                    timeout=60
+        try:
+            response = requests.post(
+                config.MODEL_OCR_URL,
+                data=model_data,
+                files=model_files,
+                timeout=75
+            )
+            response.raise_for_status()
+            model_output = response.json()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Model analyze error: {str(e)}")
+
+        phase = model_output.get("phase") if model_output else None
+        normalized_query_text = (
+            model_output.get("corrected_query_en")
+            or model_output.get("normalized_query_en")
+            or (_normalize_prompt_to_english(query_text) if query_text else None)
+        )
+
+        objects = model_output.get("objects", []) if model_output else []
+        labels = [
+            obj.get("translated_text") or obj.get("original_text") or ""
+            for obj in objects
+        ]
+        triples.extend(_build_triples_from_labels(labels))
+
+        for inferred_triple in model_output.get("sro_candidates", []) if model_output else []:
+            if inferred_triple.get("subject") and inferred_triple.get("relationship") and inferred_triple.get("object"):
+                triples.append(
+                    {
+                        "subject": _normalize_label(inferred_triple.get("subject")),
+                        "relationship": _normalize_label(inferred_triple.get("relationship")),
+                        "object": _normalize_label(inferred_triple.get("object")),
+                    }
                 )
-                response.raise_for_status()
-                model_output = response.json()
-            except Exception as e:
-                raise HTTPException(status_code=502, detail=f"Model OCR error: {str(e)}")
-
-            objects = model_output.get("objects", []) if model_output else []
-            labels = [
-                obj.get("translated_text") or obj.get("original_text") or ""
-                for obj in objects
-            ]
-            triples.extend(_build_triples_from_labels(labels))
 
         if query_text:
             triple_from_text = _parse_triple_from_text(query_text)
             if triple_from_text:
                 triples.insert(0, triple_from_text)
 
-        if not triples:
-            raise HTTPException(status_code=400, detail="Could not infer triples from input")
+        triples = [dict(item) for item in {tuple(t.items()) for t in triples if t.get("subject") and t.get("relationship") and t.get("object")}]
 
-        query_results = [
-            {
-                "triple": triple,
-                "results": _query_databases(
-                    triple["subject"],
-                    triple["relationship"],
-                    triple["object"],
+        query_results: List[Dict[str, Any]] = []
+
+        model_category_candidates = model_output.get("category_candidates", []) if model_output else []
+        model_subject_candidates = model_output.get("subject_candidates", []) if model_output else []
+        subject_terms = _safe_terms(
+            [item.get("subject_name", "") for item in model_subject_candidates]
+            + labels
+            + _derive_subject_terms_from_text(normalized_query_text or "")
+        )
+
+        if model_category_candidates:
+            routing_mode = "category_shortcut"
+            top_category = model_category_candidates[0]
+            category_ids = [item.get("category_id") for item in model_category_candidates if item.get("category_id") is not None]
+            matched_diagrams = _select_best_diagram_by_category_and_subject(
+                postgres_service,
+                neo4j_service,
+                mongo_service,
+                category_ids,
+                subject_terms,
+                normalized_query_text=normalized_query_text,
+                category_name=top_category.get("category_name"),
+            )
+            if subject_terms and not matched_diagrams:
+                # Keep searching via other routing paths instead of returning unrelated category diagram.
+                model_category_candidates = []
+
+        if model_category_candidates:
+            top_category = model_category_candidates[0]
+            category_ids = [item.get("category_id") for item in model_category_candidates if item.get("category_id") is not None]
+            matched_diagrams = _select_best_diagram_by_category_and_subject(
+                postgres_service,
+                neo4j_service,
+                mongo_service,
+                category_ids,
+                subject_terms,
+                normalized_query_text=normalized_query_text,
+                category_name=top_category.get("category_name"),
+            )
+            descriptions = [
+                f"Category match: {item.get('category_name')} (root: {item.get('root_category')}) via terms {', '.join(item.get('matched_terms', []))}"
+                for item in model_category_candidates
+            ]
+            query_results = [
+                {
+                    "triple": {
+                        "subject": normalized_query_text or (query_text or "input"),
+                        "relationship": "category_match",
+                        "object": top_category.get("category_name"),
+                    },
+                    "results": {
+                        "postgres": {
+                            "categories": model_category_candidates,
+                            "diagrams": matched_diagrams,
+                        },
+                        "neo4j": [],
+                        "mongo": [],
+                        "descriptions": descriptions,
+                        "diagrams": matched_diagrams,
+                    },
+                }
+            ]
+            final_output = _build_final_output(
+                matched_diagrams,
+                descriptions,
+                top_category.get("category_name"),
+                subject_terms,
+                normalized_query_text or query_text,
+            )
+
+        if not query_results and normalized_query_text:
+            keyword_candidates = _extract_keyword_candidates(normalized_query_text)
+            category_matches = postgres_service.search_categories_by_keywords(keyword_candidates, limit=5)
+
+            if category_matches:
+                routing_mode = "category_shortcut"
+                category_ids = [item.get("category_id") for item in category_matches if item.get("category_id") is not None]
+                matched_diagrams = _select_best_diagram_by_category_and_subject(
                     postgres_service,
                     neo4j_service,
-                    mongo_service
+                    mongo_service,
+                    category_ids,
+                    subject_terms,
+                    normalized_query_text=normalized_query_text,
+                    category_name=category_matches[0]["category_name"],
                 )
-            }
-            for triple in triples
-        ]
+
+                if subject_terms and not matched_diagrams:
+                    category_matches = []
+
+            if category_matches:
+                descriptions = [
+                    f"Matched category '{item['category_name']}' from keyword(s): {', '.join(item['matched_keywords'])}"
+                    for item in category_matches
+                ]
+
+                query_results = [
+                    {
+                        "triple": {
+                            "subject": normalized_query_text,
+                            "relationship": "category_match",
+                            "object": category_matches[0]["category_name"],
+                        },
+                        "results": {
+                            "postgres": {
+                                "categories": category_matches,
+                                "diagrams": matched_diagrams,
+                            },
+                            "neo4j": [],
+                            "mongo": [],
+                            "descriptions": descriptions,
+                            "diagrams": matched_diagrams,
+                        },
+                    }
+                ]
+
+                final_output = _build_final_output(
+                    matched_diagrams,
+                    descriptions,
+                    category_matches[0]["category_name"],
+                    subject_terms,
+                    normalized_query_text or query_text,
+                )
+
+        if not query_results and triples:
+            routing_mode = "triple"
+            query_results = [
+                {
+                    "triple": triple,
+                    "results": _query_databases(
+                        triple["subject"],
+                        triple["relationship"],
+                        triple["object"],
+                        postgres_service,
+                        neo4j_service,
+                        mongo_service
+                    )
+                }
+                for triple in triples
+            ]
+
+            merged_descriptions: List[str] = []
+            merged_diagrams: List[Dict[str, Any]] = []
+            for item in query_results:
+                merged_descriptions.extend(item.get("results", {}).get("descriptions", []))
+                merged_diagrams.extend(item.get("results", {}).get("diagrams", []))
+            if merged_diagrams:
+                unique_diagrams = list({d.get("diagram_id"): d for d in merged_diagrams if d.get("diagram_id")}.values())
+                final_output = _build_final_output(
+                    _first_diagram(unique_diagrams),
+                    merged_descriptions,
+                    None,
+                    subject_terms,
+                    normalized_query_text or query_text,
+                )
+
+        if not query_results and normalized_query_text:
+            routing_mode = "subject_fallback"
+            model_subject_candidates_terms = _safe_terms(
+                [item.get("subject_name", "") for item in model_subject_candidates]
+            )
+            extracted_subject_candidates = _extract_subject_candidates(normalized_query_text)
+
+            # Prefer specific query-derived entities first (e.g., ladybug/dragonfly),
+            # then model suggestions; avoid trying generic terms before specific ones.
+            subject_candidates = list(
+                dict.fromkeys(extracted_subject_candidates + model_subject_candidates_terms)
+            )
+            subject_candidates = [term for term in subject_candidates if _is_valid_subject_candidate(term)]
+
+            for subject_term in subject_candidates:
+                subject_path_result = postgres_service.search_subject_to_category_diagrams(subject_term, limit=25)
+
+                if subject_path_result.get("diagrams") or subject_path_result.get("categories"):
+                    descriptions = [
+                        f"Resolved subject '{subject.get('subject_name')}' to category-diagram links"
+                        for subject in subject_path_result.get("subjects", [])
+                    ]
+                    diagrams = _first_diagram(subject_path_result.get("diagrams", []))
+                    query_results = [
+                        {
+                            "triple": {
+                                "subject": subject_term,
+                                "relationship": "related_to",
+                                "object": "diagram",
+                            },
+                            "results": {
+                                "postgres": {
+                                    "categories": subject_path_result.get("categories", []),
+                                    "diagrams": diagrams,
+                                },
+                                "neo4j": [],
+                                "mongo": [],
+                                "descriptions": descriptions,
+                                "diagrams": diagrams,
+                            },
+                        }
+                    ]
+                    first_category = subject_path_result.get("categories", [{}])[0]
+                    final_output = _build_final_output(
+                        diagrams,
+                        descriptions,
+                        first_category.get("category_name") if first_category else None,
+                        [subject_term],
+                        normalized_query_text or query_text,
+                    )
+                    break
+
+        if not query_results and subject_terms:
+            routing_mode = "subject_textlabel_global"
+            textlabel_diagrams = _search_diagrams_by_subject_textlabels_global(
+                neo4j_service,
+                postgres_service,
+                subject_terms,
+                normalized_query_text,
+                limit=3,
+            )
+            if textlabel_diagrams:
+                category_name = None
+                first_diagram = textlabel_diagrams[0]
+                if first_diagram.get("category_id") is not None:
+                    try:
+                        category_obj = postgres_service.get_category(first_diagram.get("category_id"))
+                        category_name = category_obj.name if category_obj else None
+                    except Exception:
+                        category_name = None
+
+                descriptions = [
+                    f"Resolved diagram by TextLabel evidence for subject term(s): {', '.join(subject_terms[:5])}"
+                ]
+                query_results = [
+                    {
+                        "triple": {
+                            "subject": (normalized_query_text or query_text or "subject").strip(),
+                            "relationship": "textlabel_match",
+                            "object": textlabel_diagrams[0].get("diagram_id"),
+                        },
+                        "results": {
+                            "postgres": {
+                                "categories": [],
+                                "diagrams": _first_diagram(textlabel_diagrams),
+                            },
+                            "neo4j": [],
+                            "mongo": [],
+                            "descriptions": descriptions,
+                            "diagrams": _first_diagram(textlabel_diagrams),
+                        },
+                    }
+                ]
+                final_output = _build_final_output(
+                    _first_diagram(textlabel_diagrams),
+                    descriptions,
+                    category_name,
+                    subject_terms,
+                    normalized_query_text or query_text,
+                )
+
+        if not query_results:
+            routing_mode = "pending_learning"
+            pending_learning_item = mongo_service.create_pending_learning_item(
+                {
+                    "query_type": "mixed" if query_text and image else "image" if image else "text",
+                    "query_text": query_text,
+                    "normalized_query_text": normalized_query_text,
+                    "image_url": saved_image_url,
+                    "user_id": user_id,
+                    "model_output": model_output,
+                    "reason": "No category/subject/SRO match found in current knowledge base",
+                    "status": "pending",
+                }
+            )
 
         log_payload = {
             "type": "mixed" if query_text and image else "image" if image else "text",
             "query_text": query_text,
+            "normalized_query_text": normalized_query_text,
             "image_path": saved_image_path,
             "image_url": saved_image_url,
             "user_id": user_id,
+            "routing_mode": routing_mode,
+            "phase": phase,
             "triples": triples,
             "timestamp": datetime.utcnow().isoformat()
         }
@@ -275,11 +1162,16 @@ def query_stem_multimedia(
             "query": {
                 "type": log_payload["type"],
                 "text": query_text,
+                "normalized_text": normalized_query_text,
+                "routing_mode": routing_mode,
+                "phase": phase,
                 "image_url": saved_image_url
             },
             "model_output": model_output,
             "triples": triples,
-            "query_results": query_results
+            "query_results": query_results,
+            "final_output": final_output,
+            "pending_review": pending_learning_item,
         }
 
     except HTTPException:
@@ -305,6 +1197,312 @@ def get_query_logs(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/query/pending-learning")
+def get_pending_learning_items(
+    limit: int = Query(50, ge=1, le=200),
+    status: Optional[str] = Query(None)
+) -> Dict[str, Any]:
+    """Danh sách input chưa match dữ liệu KG để admin review và bổ sung."""
+    service = MongoService()
+    try:
+        items = service.get_pending_learning_items(limit=limit, status=status)
+        return {
+            "success": True,
+            "total": len(items),
+            "items": items,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/query/pending-learning/{item_id}/approve")
+def approve_pending_learning_item(
+    item_id: str,
+    payload: PendingLearningApprovalRequest,
+    db: Session = Depends(get_postgres_db)
+) -> Dict[str, Any]:
+    """Admin duyệt pending item và đồng bộ tri thức mới vào PostgreSQL + Neo4j + MongoDB."""
+    mongo_service = MongoService()
+    postgres_service = PostgresService(db)
+    neo4j_service: Optional[Neo4jService] = None
+
+    pending_item = mongo_service.get_pending_learning_item_by_id(item_id)
+    if not pending_item:
+        raise HTTPException(status_code=404, detail="Pending learning item not found")
+
+    if pending_item.get("status") == "approved":
+        return {
+            "success": True,
+            "message": "Pending learning item was already approved",
+            "item": pending_item,
+        }
+
+    inserted: Dict[str, Any] = {
+        "root_category": None,
+        "category": None,
+        "root_subject": None,
+        "subjects": [],
+        "relationship": None,
+        "sro": None,
+        "neo4j_subjects_synced": [],
+        "neo4j_relationship_synced": False,
+        "mongo_semantic_relationship": None,
+    }
+
+    try:
+        neo4j_service = Neo4jService()
+
+        selected_category_name = payload.category_name
+        if not selected_category_name:
+            model_output = pending_item.get("model_output") or {}
+            category_candidates = model_output.get("category_candidates") or []
+            if category_candidates and isinstance(category_candidates[0], dict):
+                selected_category_name = category_candidates[0].get("category_name")
+
+        category_obj = None
+        if selected_category_name:
+            category_obj = _find_category_by_name(postgres_service, selected_category_name)
+            if not category_obj:
+                root_category_id = "auto_learned"
+                root_category = postgres_service.get_root_category(root_category_id)
+                if not root_category:
+                    root_category = postgres_service.create_root_category(
+                        postgres_schemas.RootCategoryCreate(
+                            id=root_category_id,
+                            name="Auto Learned",
+                            description="Categories approved from pending learning queue",
+                        )
+                    )
+                    inserted["root_category"] = {
+                        "id": root_category.id,
+                        "name": root_category.name,
+                    }
+
+                category_obj = postgres_service.create_category(
+                    postgres_schemas.CategoryCreate(
+                        name=selected_category_name,
+                        root_category_id=root_category.id,
+                        level=1,
+                        description="Approved from pending learning queue",
+                    )
+                )
+                inserted["category"] = {
+                    "id": category_obj.id,
+                    "name": category_obj.name,
+                }
+
+        root_subject_name = payload.root_subject_name or "Auto Learned Subjects"
+        root_subject_obj = _find_root_subject_by_name(postgres_service, root_subject_name)
+        if not root_subject_obj:
+            root_subject_obj = postgres_service.create_root_subject(
+                postgres_schemas.RootSubjectCreate(
+                    name=root_subject_name,
+                    description="Root subject for approved pending-learning terms",
+                    level=0,
+                )
+            )
+        inserted["root_subject"] = {
+            "id": root_subject_obj.id,
+            "name": root_subject_obj.name,
+        }
+
+        subject_names = [_normalize_label(name) for name in (payload.subject_names or []) if name and _normalize_label(name)]
+        if not subject_names:
+            subject_names = _collect_subject_names_from_pending(pending_item)
+
+        if not subject_names:
+            normalized_query = _normalize_label(
+                pending_item.get("normalized_query_text") or pending_item.get("query_text") or ""
+            )
+            if normalized_query:
+                tokens = [token for token in normalized_query.split() if len(token) >= 3]
+                subject_names = tokens[:2]
+
+        if not subject_names:
+            raise HTTPException(status_code=400, detail="No subject candidates to approve from pending item")
+
+        persisted_subjects = []
+        for subject_name in subject_names[:5]:
+            subject_obj = _find_subject_exact(postgres_service, subject_name)
+            if not subject_obj:
+                categories = [category_obj.name] if category_obj else []
+                subject_obj = postgres_service.create_subject(
+                    postgres_schemas.SubjectCreate(
+                        name=subject_name,
+                        root_subject_id=root_subject_obj.id,
+                        synonyms=[subject_name],
+                        description="Approved from pending learning queue",
+                        categories=categories,
+                    )
+                )
+            persisted_subjects.append(subject_obj)
+            inserted["subjects"].append({
+                "id": subject_obj.id,
+                "name": subject_obj.name,
+            })
+
+            neo4j_subject = neo4j_service.create_subject(
+                {
+                    "id": subject_obj.id,
+                    "name": subject_obj.name,
+                    "root_subject_id": root_subject_obj.id,
+                    "synonyms": subject_obj.synonyms or [],
+                    "description": subject_obj.description or "",
+                    "categories": subject_obj.categories or [],
+                }
+            )
+            if neo4j_subject:
+                inserted["neo4j_subjects_synced"].append(subject_obj.id)
+
+        relationship_name = _normalize_label(payload.relationship_name or "") or _collect_relationship_from_pending(pending_item)
+        relationship_obj = postgres_service.get_relationship_by_name(relationship_name)
+        if not relationship_obj:
+            relationship_obj = postgres_service.create_relationship(
+                postgres_schemas.RelationshipCreate(
+                    name=relationship_name,
+                    description="Approved from pending learning queue",
+                    semantic_type="learned",
+                )
+            )
+        inserted["relationship"] = {
+            "id": relationship_obj.id,
+            "name": relationship_obj.name,
+        }
+
+        subject_for_sro = persisted_subjects[0]
+        object_for_sro = persisted_subjects[1] if len(persisted_subjects) > 1 else persisted_subjects[0]
+
+        diagram_id = None
+        if category_obj:
+            diagrams = postgres_service.get_diagrams_by_category(category_obj.id, limit=1)
+            if diagrams:
+                diagram_id = diagrams[0].id
+
+        existing_sro = postgres_service.get_sro_by_triple(
+            subject_for_sro.id,
+            relationship_obj.id,
+            object_for_sro.id,
+        )
+        if existing_sro:
+            sro_obj = existing_sro
+        else:
+            sro_obj = postgres_service.create_sro(
+                postgres_schemas.SROCreate(
+                    subject_id=subject_for_sro.id,
+                    relationship_id=relationship_obj.id,
+                    object_id=object_for_sro.id,
+                    diagram_id=diagram_id,
+                    confidence_score=0.95,
+                    context="Approved from pending-learning queue",
+                )
+            )
+
+        inserted["sro"] = {
+            "id": sro_obj.id,
+            "subject_id": sro_obj.subject_id,
+            "relationship_id": sro_obj.relationship_id,
+            "object_id": sro_obj.object_id,
+            "diagram_id": sro_obj.diagram_id,
+        }
+
+        neo4j_relationship = neo4j_service.create_subject_relationship(
+            from_subject_id=subject_for_sro.id,
+            to_subject_id=object_for_sro.id,
+            relationship_type=relationship_obj.name.upper().replace(" ", "_"),
+            properties={
+                "approved_from_pending": True,
+                "pending_item_id": item_id,
+                "confidence_score": 0.95,
+                "diagram_id": diagram_id or "",
+            },
+        )
+        inserted["neo4j_relationship_synced"] = bool(neo4j_relationship)
+
+        if diagram_id and category_obj:
+            semantic_doc = mongo_service.create_semantic_relationship(
+                SemanticRelationshipCreate(
+                    diagram_id=diagram_id,
+                    category=category_obj.name,
+                    extracted_relationships=[
+                        {
+                            "subject": subject_for_sro.name,
+                            "relationship": relationship_obj.name,
+                            "object": object_for_sro.name,
+                            "source": "pending-learning-approval",
+                        }
+                    ],
+                )
+            )
+            inserted["mongo_semantic_relationship"] = semantic_doc.get("_id") if semantic_doc else None
+
+        updated_item = mongo_service.update_pending_learning_item(
+            item_id,
+            {
+                "status": "approved",
+                "approved_by": payload.approved_by,
+                "approved_note": payload.note,
+                "approved_at": datetime.utcnow().isoformat(),
+                "approval_result": inserted,
+            },
+        )
+
+        return {
+            "success": True,
+            "message": "Pending learning item approved and synced",
+            "result": inserted,
+            "item": updated_item,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Approval sync failed: {str(e)}")
+    finally:
+        if neo4j_service:
+            neo4j_service.close()
+
+
+@router.post("/query/pending-learning/{item_id}/reject")
+def reject_pending_learning_item(
+    item_id: str,
+    payload: PendingLearningRejectRequest
+) -> Dict[str, Any]:
+    """Admin từ chối pending item và lưu lý do để theo dõi vòng học dữ liệu."""
+    mongo_service = MongoService()
+    pending_item = mongo_service.get_pending_learning_item_by_id(item_id)
+
+    if not pending_item:
+        raise HTTPException(status_code=404, detail="Pending learning item not found")
+
+    current_status = pending_item.get("status")
+    if current_status == "approved":
+        raise HTTPException(status_code=409, detail="Cannot reject an already approved pending item")
+
+    if current_status == "rejected":
+        return {
+            "success": True,
+            "message": "Pending learning item was already rejected",
+            "item": pending_item,
+        }
+
+    rejected_item = mongo_service.update_pending_learning_item(
+        item_id,
+        {
+            "status": "rejected",
+            "rejected_by": payload.rejected_by,
+            "rejected_reason": payload.reason,
+            "rejected_note": payload.note,
+            "rejected_at": datetime.utcnow().isoformat(),
+        },
+    )
+
+    return {
+        "success": True,
+        "message": "Pending learning item rejected",
+        "item": rejected_item,
+    }
 
 
 # ========== SRO MANAGEMENT ENDPOINTS ==========

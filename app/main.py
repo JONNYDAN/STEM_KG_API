@@ -24,10 +24,11 @@ app = FastAPI(
 # Create all tables
 Base.metadata.create_all(bind=engine)
 
-# Static files for uploads
+# Static files for images/uploads
+os.makedirs(config.IMAGE_DIR, exist_ok=True)
 os.makedirs(config.UPLOAD_DIR, exist_ok=True)
-app.mount("/images", StaticFiles(directory=config.UPLOAD_DIR), name="images")
-app.mount("/uploads", StaticFiles(directory=config.UPLOAD_DIR), name="uploads")
+app.mount("/images", StaticFiles(directory=config.IMAGE_DIR), name="images")
+app.mount(f"{config.API_PREFIX}/images", StaticFiles(directory=config.IMAGE_DIR), name="api-images")
 
 # CORS middleware
 app.add_middleware(

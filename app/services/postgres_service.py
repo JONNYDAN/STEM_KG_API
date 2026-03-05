@@ -534,6 +534,235 @@ class PostgresService:
             "avg_confidence": float(row[4]) if row[4] else 0,
             "relevance_score": float(row[5]) if row[5] else 0
         } for row in result]
+
+    def search_categories_by_keywords(self, keywords: List[str], limit: int = 5) -> List[Dict[str, Any]]:
+        """Find categories by keyword overlap with category/root names, descriptions and trigger codes."""
+        cleaned_keywords = [k.strip().lower() for k in keywords if k and k.strip()]
+        if not cleaned_keywords:
+            return []
+
+        categories = (
+            self.db.query(models.Category, models.RootCategory)
+            .join(models.RootCategory, models.Category.root_category_id == models.RootCategory.id)
+            .all()
+        )
+
+        matches: List[Dict[str, Any]] = []
+        for category, root_category in categories:
+            trigger_codes = [
+                item[0]
+                for item in self.db.query(models.Diagram.trigger_code)
+                .filter(models.Diagram.category_id == category.id)
+                .filter(models.Diagram.trigger_code.isnot(None))
+                .distinct()
+                .all()
+                if item and item[0]
+            ]
+
+            haystack_parts = [
+                category.name or "",
+                category.description or "",
+                root_category.name or "",
+                root_category.description or "",
+                " ".join(trigger_codes)
+            ]
+            haystack = " ".join(haystack_parts).lower()
+            haystack_compact = re.sub(r"[^a-z0-9]", "", haystack)
+
+            matched_keywords: List[str] = []
+            score = 0.0
+            for kw in cleaned_keywords:
+                kw_compact = re.sub(r"[^a-z0-9]", "", kw)
+                if kw in haystack:
+                    score += len(kw)
+                    matched_keywords.append(kw)
+                elif kw_compact and kw_compact in haystack_compact:
+                    score += max(1.0, len(kw_compact) * 0.8)
+                    matched_keywords.append(kw)
+
+            if score < 2.5:
+                continue
+
+            matches.append(
+                {
+                    "category_id": category.id,
+                    "category_name": category.name,
+                    "root_category": root_category.name,
+                    "keyword_score": round(score, 2),
+                    "matched_keywords": list(dict.fromkeys(matched_keywords)),
+                }
+            )
+
+        matches.sort(key=lambda item: item["keyword_score"], reverse=True)
+        return matches[:limit]
+
+    def search_subject_to_category_diagrams(self, subject_term: str, limit: int = 20) -> Dict[str, Any]:
+        """Resolve subject -> category -> diagrams path using SRO links."""
+        normalized_term = (subject_term or "").strip().lower()
+        if not normalized_term:
+            return {"subjects": [], "categories": [], "diagrams": []}
+        compact_term = re.sub(r"[^a-z0-9]", "", normalized_term)
+
+        subjects = self.search_subjects(name=subject_term)
+        if not subjects:
+            from sqlalchemy import text
+
+            synonym_query = text("""
+            SELECT *
+            FROM subjects s
+            WHERE EXISTS (
+                SELECT 1
+                FROM jsonb_array_elements_text(COALESCE(s.synonyms::jsonb, '[]'::jsonb)) AS syn
+                WHERE lower(syn) LIKE :syn_pattern
+            )
+            """)
+
+            synonym_rows = self.db.execute(
+                synonym_query,
+                {"syn_pattern": f"%{normalized_term}%"}
+            ).fetchall()
+
+            if synonym_rows:
+                subject_ids = [row.id for row in synonym_rows]
+                subjects = (
+                    self.db.query(models.Subject)
+                    .filter(models.Subject.id.in_(subject_ids))
+                    .all()
+                )
+
+        if not subjects and compact_term:
+            from sqlalchemy import text
+
+            compact_query = text("""
+            SELECT *
+            FROM subjects s
+            WHERE regexp_replace(lower(s.name), '[^a-z0-9]', '', 'g') LIKE :compact_pattern
+               OR EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements_text(COALESCE(s.synonyms::jsonb, '[]'::jsonb)) AS syn
+                    WHERE regexp_replace(lower(syn), '[^a-z0-9]', '', 'g') LIKE :compact_pattern
+               )
+            """)
+
+            compact_rows = self.db.execute(
+                compact_query,
+                {"compact_pattern": f"%{compact_term}%"}
+            ).fetchall()
+
+            if compact_rows:
+                subject_ids = [row.id for row in compact_rows]
+                subjects = (
+                    self.db.query(models.Subject)
+                    .filter(models.Subject.id.in_(subject_ids))
+                    .all()
+                )
+
+        if not subjects:
+            return {"subjects": [], "categories": [], "diagrams": []}
+
+        subject_ids = [subject.id for subject in subjects]
+
+        rows = (
+            self.db.query(
+                models.SubjectRelationshipObject,
+                models.Diagram,
+                models.Category,
+                models.RootCategory,
+            )
+            .join(models.Diagram, models.SubjectRelationshipObject.diagram_id == models.Diagram.id)
+            .join(models.Category, models.Diagram.category_id == models.Category.id)
+            .outerjoin(models.RootCategory, models.Category.root_category_id == models.RootCategory.id)
+            .filter(
+                or_(
+                    models.SubjectRelationshipObject.subject_id.in_(subject_ids),
+                    models.SubjectRelationshipObject.object_id.in_(subject_ids),
+                )
+            )
+            .limit(limit)
+            .all()
+        )
+
+        category_map: Dict[int, Dict[str, Any]] = {}
+        diagram_map: Dict[str, Dict[str, Any]] = {}
+
+        for _, diagram, category, root_category in rows:
+            if category and category.id not in category_map:
+                category_map[category.id] = {
+                    "category_id": category.id,
+                    "category_name": category.name,
+                    "root_category": root_category.name if root_category else None,
+                }
+
+            if diagram and diagram.id not in diagram_map:
+                diagram_map[diagram.id] = {
+                    "diagram_id": diagram.id,
+                    "image_path": diagram.image_path,
+                    "category_id": diagram.category_id,
+                }
+
+        if not category_map:
+            subject_category_terms: List[str] = []
+            for subject in subjects:
+                if isinstance(subject.categories, list):
+                    subject_category_terms.extend([
+                        str(item).strip() for item in subject.categories if item
+                    ])
+                elif isinstance(subject.categories, str) and subject.categories.strip():
+                    subject_category_terms.append(subject.categories.strip())
+
+                root_subject = self.get_root_subject(subject.root_subject_id) if subject.root_subject_id else None
+                if root_subject and root_subject.name:
+                    subject_category_terms.append(str(root_subject.name).strip())
+
+            for term in list(dict.fromkeys(subject_category_terms)):
+                term_lower = term.lower()
+                term_compact = re.sub(r"[^a-z0-9]", "", term_lower)
+
+                category_candidates = self.db.query(models.Category).all()
+                for category in category_candidates:
+                    cat_name = (category.name or "").lower()
+                    cat_code = (category.code or "").lower()
+                    cat_compact = re.sub(r"[^a-z0-9]", "", cat_name)
+                    code_compact = re.sub(r"[^a-z0-9]", "", cat_code)
+
+                    is_match = (
+                        term_lower == cat_name
+                        or term_lower in cat_name
+                        or (term_compact and (term_compact == cat_compact or term_compact in cat_compact or term_compact in code_compact))
+                    )
+                    if not is_match:
+                        continue
+
+                    root_category = self.get_root_category(category.root_category_id) if category.root_category_id else None
+                    if category.id not in category_map:
+                        category_map[category.id] = {
+                            "category_id": category.id,
+                            "category_name": category.name,
+                            "root_category": root_category.name if root_category else None,
+                        }
+
+                    for diagram in self.get_diagrams_by_category(category.id, limit=limit):
+                        if diagram.id not in diagram_map:
+                            diagram_map[diagram.id] = {
+                                "diagram_id": diagram.id,
+                                "image_path": diagram.image_path,
+                                "category_id": diagram.category_id,
+                            }
+
+        subject_payload = [
+            {
+                "subject_id": subject.id,
+                "subject_name": subject.name,
+                "matched": normalized_term in (subject.name or "").lower(),
+            }
+            for subject in subjects
+        ]
+
+        return {
+            "subjects": subject_payload,
+            "categories": list(category_map.values()),
+            "diagrams": list(diagram_map.values()),
+        }
     
     def get_statistics(self) -> Dict[str, Any]:
         """Lấy thống kê tổng quan"""

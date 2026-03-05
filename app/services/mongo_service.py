@@ -18,6 +18,7 @@ class MongoService:
         self.root_subjects = self.db["root_subjects"]
         self.subjects = self.db["subjects"]
         self.query_logs = self.db["query_logs"]
+        self.pending_learning = self.db["pending_learning"]
     
     def create_diagram_annotation(self, annotation: DiagramAnnotationCreate) -> Dict[str, Any]:
         """Tạo annotation mới cho diagram"""
@@ -199,3 +200,42 @@ class MongoService:
             result["_id"] = str(result["_id"])
             logs.append(result)
         return logs
+
+    # ========== PENDING LEARNING ITEMS ==========
+    def create_pending_learning_item(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(payload)
+        data["status"] = data.get("status", "pending")
+        data["created_at"] = datetime.now()
+        result = self.pending_learning.insert_one(data)
+        return self.get_pending_learning_item_by_id(str(result.inserted_id))
+
+    def get_pending_learning_item_by_id(self, item_id: str) -> Optional[Dict[str, Any]]:
+        try:
+            obj_id = ObjectId(item_id)
+            result = self.pending_learning.find_one({"_id": obj_id})
+            if result:
+                result["_id"] = str(result["_id"])
+            return result
+        except Exception:
+            return None
+
+    def get_pending_learning_items(self, limit: int = 100, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        query: Dict[str, Any] = {}
+        if status:
+            query["status"] = status
+        results = self.pending_learning.find(query).sort("created_at", -1).limit(limit)
+        items: List[Dict[str, Any]] = []
+        for result in results:
+            result["_id"] = str(result["_id"])
+            items.append(result)
+        return items
+
+    def update_pending_learning_item(self, item_id: str, update_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        try:
+            obj_id = ObjectId(item_id)
+            payload = dict(update_data)
+            payload["updated_at"] = datetime.now()
+            self.pending_learning.update_one({"_id": obj_id}, {"$set": payload})
+            return self.get_pending_learning_item_by_id(item_id)
+        except Exception:
+            return None
