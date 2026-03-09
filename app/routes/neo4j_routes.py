@@ -164,6 +164,40 @@ def search_by_triple(
     finally:
         service.close()
 
+@router.get("/graph/diagram/{diagram_id}", response_model=Dict[str, Any])
+def get_rich_graph_by_diagram(
+    diagram_id: str,
+    root_category_id: Optional[str] = None,
+    category_name: Optional[str] = None,
+):
+    """Get rich graph for diagram from Neo4j, including blobs/text labels/arrows/arrow heads."""
+    service = Neo4jService()
+    try:
+        graph = service.get_rich_graph_by_diagram(
+            diagram_id=diagram_id,
+            root_category_id=root_category_id,
+            category_name=category_name,
+        )
+
+        if not graph.get("nodes"):
+            raise HTTPException(status_code=404, detail="Graph not found for this diagram in Neo4j")
+
+        return {
+            "success": True,
+            "graph": graph,
+            "summary": {
+                "diagram_id": diagram_id,
+                "node_count": len(graph.get("nodes", [])),
+                "edge_count": len(graph.get("edges", [])),
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        service.close()
+
 # ========== ROOT SUBJECTS (SYNC) ==========
 @router.post("/root-subjects/", response_model=Dict[str, Any])
 def create_root_subject_sync(

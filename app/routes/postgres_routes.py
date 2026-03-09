@@ -167,6 +167,167 @@ def get_diagrams_by_category(
     result = service.get_diagrams_by_category(category_id, skip=skip, limit=limit)
     return [schemas.DiagramResponse.model_validate(item) for item in result]
 
+@router.get("/knowledge-graph/diagram/{diagram_id}", response_model=Dict[str, Any])
+def get_knowledge_graph_by_diagram(
+    diagram_id: str = Path(..., description="Diagram ID"),
+    root_category_id: Optional[str] = Query(None, description="Expected Root Category ID"),
+    category_id: Optional[int] = Query(None, ge=1, description="Expected Category ID"),
+    db: Session = Depends(get_postgres_db)
+):
+    """Build graph data from RootCategory -> Category -> Diagram and all SRO triples of that diagram."""
+    service = PostgresService(db)
+
+    diagram = service.get_diagram(diagram_id)
+    if not diagram:
+        raise HTTPException(status_code=404, detail="Diagram not found")
+
+    if category_id is not None and diagram.category_id != category_id:
+        raise HTTPException(status_code=400, detail="Diagram does not belong to selected category")
+
+    category = service.get_category(diagram.category_id)
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found for diagram")
+
+    if root_category_id is not None and category.root_category_id != root_category_id:
+        raise HTTPException(status_code=400, detail="Category does not belong to selected root category")
+
+    root_category = service.get_root_category(category.root_category_id)
+    if not root_category:
+        raise HTTPException(status_code=404, detail="Root category not found for category")
+
+    sro_rows = service.search_sros(diagram_id=diagram_id)
+
+    nodes: List[Dict[str, Any]] = []
+    edges: List[Dict[str, Any]] = []
+    node_seen = set()
+    edge_seen = set()
+
+    def add_node(node_id: str, label: str, node_type: str, payload: Dict[str, Any]):
+        if node_id in node_seen:
+            return
+        nodes.append({
+            "id": node_id,
+            "label": label,
+            "type": node_type,
+            "payload": payload,
+        })
+        node_seen.add(node_id)
+
+    def add_edge(from_id: str, to_id: str, relation: str, payload: Optional[Dict[str, Any]] = None):
+        edge_id = f"{from_id}|{relation}|{to_id}"
+        if edge_id in edge_seen:
+            return
+        edges.append({
+            "id": edge_id,
+            "from": from_id,
+            "to": to_id,
+            "label": relation,
+            "type": relation,
+            "payload": payload or {},
+        })
+        edge_seen.add(edge_id)
+
+    root_node_id = f"root-category:{root_category.id}"
+    category_node_id = f"category:{category.id}"
+    diagram_node_id = f"diagram:{diagram.id}"
+
+    add_node(
+        root_node_id,
+        root_category.name,
+        "root_category",
+        {
+            "id": root_category.id,
+            "code": root_category.code,
+            "description": root_category.description,
+        },
+    )
+    add_node(
+        category_node_id,
+        category.name,
+        "category",
+        {
+            "id": category.id,
+            "code": category.code,
+            "level": category.level,
+            "description": category.description,
+        },
+    )
+    add_node(
+        diagram_node_id,
+        diagram.id,
+        "diagram",
+        {
+            "id": diagram.id,
+            "category_id": diagram.category_id,
+            "image_path": diagram.image_path,
+            "processed": diagram.processed,
+        },
+    )
+
+    add_edge(root_node_id, category_node_id, "HAS_CATEGORY")
+    add_edge(category_node_id, diagram_node_id, "HAS_DIAGRAM")
+
+    for row in sro_rows:
+        subject_node_id = f"subject:{row['subject_id']}"
+        object_node_id = f"subject:{row['object_id']}"
+
+        add_node(
+            subject_node_id,
+            row["subject_name"],
+            "subject",
+            {
+                "id": row["subject_id"],
+                "diagram_id": row.get("diagram_id"),
+            },
+        )
+        add_node(
+            object_node_id,
+            row["object_name"],
+            "subject",
+            {
+                "id": row["object_id"],
+                "diagram_id": row.get("diagram_id"),
+            },
+        )
+
+        add_edge(diagram_node_id, subject_node_id, "HAS_SUBJECT")
+        add_edge(diagram_node_id, object_node_id, "HAS_SUBJECT")
+        add_edge(
+            subject_node_id,
+            object_node_id,
+            row["relationship_name"],
+            {
+                "sro_id": row.get("id"),
+                "confidence_score": row.get("confidence_score"),
+                "context": row.get("context"),
+            },
+        )
+
+    return {
+        "success": True,
+        "graph": {
+            "nodes": nodes,
+            "edges": edges,
+        },
+        "summary": {
+            "root_category": {
+                "id": root_category.id,
+                "name": root_category.name,
+            },
+            "category": {
+                "id": category.id,
+                "name": category.name,
+            },
+            "diagram": {
+                "id": diagram.id,
+                "image_path": diagram.image_path,
+            },
+            "triple_count": len(sro_rows),
+            "node_count": len(nodes),
+            "edge_count": len(edges),
+        }
+    }
+
 @router.put("/diagrams/{diagram_id}", response_model=schemas.DiagramResponse)
 def update_diagram(
     diagram_id: str = Path(..., description="Diagram ID"),

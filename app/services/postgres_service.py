@@ -1,4 +1,4 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 from sqlalchemy import and_, or_, func
 from app.models import postgres_models as models
 from app.schemas import postgres_schemas as schemas
@@ -433,22 +433,25 @@ class PostgresService:
                    object_name: Optional[str] = None,
                    diagram_id: Optional[str] = None,
                    min_confidence: Optional[float] = None) -> List[Dict[str, Any]]:
+        subject_alias = aliased(models.Subject)
+        object_alias = aliased(models.Subject)
+
         query = self.db.query(
             models.SubjectRelationshipObject,
-            models.Subject.name.label('subject_name'),
+            subject_alias.name.label('subject_name'),
             models.Relationship.name.label('relationship_name'),
-            models.Subject_1.name.label('object_name')
+            object_alias.name.label('object_name')
         )\
-        .join(models.Subject, models.SubjectRelationshipObject.subject_id == models.Subject.id)\
+        .join(subject_alias, models.SubjectRelationshipObject.subject_id == subject_alias.id)\
         .join(models.Relationship, models.SubjectRelationshipObject.relationship_id == models.Relationship.id)\
-        .join(models.Subject, models.SubjectRelationshipObject.object_id == models.Subject.id)\
+        .join(object_alias, models.SubjectRelationshipObject.object_id == object_alias.id)\
         
         if subject_name:
-            query = query.filter(models.Subject.name.ilike(f"%{subject_name}%"))
+            query = query.filter(subject_alias.name.ilike(f"%{subject_name}%"))
         if relationship_name:
             query = query.filter(models.Relationship.name.ilike(f"%{relationship_name}%"))
         if object_name:
-            query = query.filter(models.Subject_1.name.ilike(f"%{object_name}%"))
+            query = query.filter(object_alias.name.ilike(f"%{object_name}%"))
         if diagram_id:
             query = query.filter(models.SubjectRelationshipObject.diagram_id == diagram_id)
         if min_confidence:

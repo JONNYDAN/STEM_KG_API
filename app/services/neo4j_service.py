@@ -573,6 +573,125 @@ class Neo4jService:
             "matching_labels": record["matching_labels"],
             "matched_text": record["matched_text"]
         } for record in result]
+
+    def get_rich_graph_by_diagram(
+        self,
+        diagram_id: str,
+        root_category_id: Optional[str] = None,
+        category_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Get rich subgraph around a diagram from Neo4j, including TextLabel/Blob/Arrow/ArrowHead."""
+        nodes_query = """
+        MATCH (d:Diagram {id: $diagram_id})
+        OPTIONAL MATCH (c:Category)-[:CONTAINS]->(d)
+        OPTIONAL MATCH (rc:RootCategory)-[:HAS_CATEGORY]->(c)
+        OPTIONAL MATCH (root:Root)-[:HAS_ROOT_CATEGORY]->(rc)
+        WHERE ($root_category_id IS NULL OR rc.id = $root_category_id)
+          AND ($category_name IS NULL OR c.name = $category_name)
+        WITH d, c, rc, root
+        OPTIONAL MATCH p1=(root)-[:HAS_ROOT_CATEGORY]->(rc)-[:HAS_CATEGORY]->(c)-[:CONTAINS]->(d)
+        OPTIONAL MATCH p2=(d)-[*1..2]-(detail)
+        WHERE any(lbl IN labels(detail) WHERE lbl IN ['TextLabel', 'Blob', 'Arrow', 'ArrowHead', 'ImageConst'])
+        WITH [p1, p2] AS paths
+        UNWIND paths AS p
+        WITH p WHERE p IS NOT NULL
+        UNWIND nodes(p) AS n
+        RETURN DISTINCT elementId(n) AS node_id, labels(n) AS node_labels, properties(n) AS node_props
+        """
+
+        edges_query = """
+        MATCH (d:Diagram {id: $diagram_id})
+        OPTIONAL MATCH (c:Category)-[:CONTAINS]->(d)
+        OPTIONAL MATCH (rc:RootCategory)-[:HAS_CATEGORY]->(c)
+        OPTIONAL MATCH (root:Root)-[:HAS_ROOT_CATEGORY]->(rc)
+        WHERE ($root_category_id IS NULL OR rc.id = $root_category_id)
+          AND ($category_name IS NULL OR c.name = $category_name)
+        WITH d, c, rc, root
+        OPTIONAL MATCH p1=(root)-[:HAS_ROOT_CATEGORY]->(rc)-[:HAS_CATEGORY]->(c)-[:CONTAINS]->(d)
+        OPTIONAL MATCH p2=(d)-[*1..2]-(detail)
+        WHERE any(lbl IN labels(detail) WHERE lbl IN ['TextLabel', 'Blob', 'Arrow', 'ArrowHead', 'ImageConst'])
+        WITH [p1, p2] AS paths
+        UNWIND paths AS p
+        WITH p WHERE p IS NOT NULL
+        UNWIND relationships(p) AS r
+        RETURN DISTINCT
+            elementId(r) AS edge_id,
+            elementId(startNode(r)) AS from_id,
+            elementId(endNode(r)) AS to_id,
+            type(r) AS rel_type,
+            properties(r) AS rel_props
+        """
+
+        params = {
+            "diagram_id": diagram_id,
+            "root_category_id": root_category_id,
+            "category_name": category_name,
+        }
+
+        node_records = list(self.session.run(nodes_query, params))
+        if not node_records:
+            return {"nodes": [], "edges": []}
+
+        edge_records = list(self.session.run(edges_query, params))
+
+        def detect_node_type(labels: List[str], props: Dict[str, Any]) -> str:
+            if "Root" in labels:
+                return "root"
+            if "RootCategory" in labels:
+                return "root_category"
+            if "Category" in labels:
+                return "category"
+            if "Diagram" in labels:
+                return "diagram"
+            if "TextLabel" in labels:
+                return "text_label"
+            if "Blob" in labels:
+                return "blob"
+            if "Arrow" in labels:
+                return "arrow"
+            if "ArrowHead" in labels:
+                return "arrow_head"
+            if "ImageConst" in labels:
+                return "image_const"
+            return str(props.get("type") or (labels[0] if labels else "node")).lower()
+
+        nodes: List[Dict[str, Any]] = []
+        for record in node_records:
+            labels = list(record["node_labels"] or [])
+            props = _serialize_neo4j_dict(dict(record["node_props"] or {}))
+            label = (
+                props.get("name")
+                or props.get("value")
+                or props.get("id")
+                or (labels[0] if labels else "node")
+            )
+
+            nodes.append(
+                {
+                    "id": record["node_id"],
+                    "label": str(label),
+                    "type": detect_node_type(labels, props),
+                    "labels": labels,
+                    "payload": props,
+                }
+            )
+
+        edges: List[Dict[str, Any]] = []
+        for record in edge_records:
+            rel_props = _serialize_neo4j_dict(dict(record["rel_props"] or {}))
+            rel_type = record["rel_type"]
+            edges.append(
+                {
+                    "id": record["edge_id"],
+                    "from": record["from_id"],
+                    "to": record["to_id"],
+                    "label": rel_type,
+                    "type": rel_type,
+                    "payload": rel_props,
+                }
+            )
+
+        return {"nodes": nodes, "edges": edges}
     
     def close(self):
         if self.session:
