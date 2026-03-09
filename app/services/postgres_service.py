@@ -509,21 +509,27 @@ class PostgresService:
         LEFT JOIN subjects s1 ON sro.subject_id = s1.id
         LEFT JOIN relationships r ON sro.relationship_id = r.id
         LEFT JOIN subjects s2 ON sro.object_id = s2.id
-        WHERE (s1.name ILIKE :subject_pattern OR :subject = ANY(s1.synonyms))
+        WHERE (
+            s1.name ILIKE :subject_pattern
+            OR COALESCE(CAST(s1.synonyms AS TEXT), '') ILIKE :subject_synonyms_pattern
+        )
         AND (r.name ILIKE :rel_pattern OR r.name IN (
             SELECT name FROM relationships WHERE inverse_relationship ILIKE :rel_pattern
         ))
-        AND (s2.name ILIKE :object_pattern OR :object = ANY(s2.synonyms))
+        AND (
+            s2.name ILIKE :object_pattern
+            OR COALESCE(CAST(s2.synonyms AS TEXT), '') ILIKE :object_synonyms_pattern
+        )
         GROUP BY c.id, c.name, rc.name
         ORDER BY relevance_score DESC
         """)
         
         result = self.db.execute(query, {
             'subject_pattern': f"%{subject}%",
-            'subject': subject,
+            'subject_synonyms_pattern': f"%{subject}%",
             'rel_pattern': f"%{relationship}%",
             'object_pattern': f"%{object}%",
-            'object': object
+            'object_synonyms_pattern': f"%{object}%",
         }).fetchall()
         
         return [{

@@ -174,7 +174,7 @@ class Neo4jService:
                 o.name as object_name,
                 s.category as category,
                 r.confidence as confidence,
-                s.properties['diagram_id'] as diagram_id
+                coalesce(s.diagram_id, s.diagramId, r.diagram_id, r.diagramId, '') as diagram_id
             ORDER BY r.confidence DESC
             LIMIT 10
             """
@@ -198,7 +198,7 @@ class Neo4jService:
                 o.name as object_name,
                 s.category as category,
                 r.confidence as confidence,
-                s.properties['diagram_id'] as diagram_id
+                coalesce(s.diagram_id, s.diagramId, r.diagram_id, r.diagramId, '') as diagram_id
             ORDER BY r.confidence DESC
             LIMIT 10
             """

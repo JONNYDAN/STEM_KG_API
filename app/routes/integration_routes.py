@@ -8,6 +8,7 @@ import uuid
 import requests
 import unicodedata
 from datetime import datetime
+from urllib.parse import quote_plus
 
 from app.services.integration_service import IntegrationService
 from app.database.postgres_conn import get_postgres_db
@@ -46,7 +47,8 @@ VI_FILLER_WORDS = {
 EN_FILLER_WORDS = {
     "tell", "me", "what", "is", "where", "located", "about", "please", "show", "explain",
     "the", "a", "an", "of", "to", "in", "for", "on", "and",
-    "can", "could", "would", "you", "your", "how", "works", "work", "does", "do"
+    "can", "could", "would", "you", "your", "how", "works", "work", "does", "do",
+    "voi", "chan", "ma", "lai", "sao", "thong", "tin", "info", "dien", "ra"
 }
 
 GENERIC_SUBJECT_TERMS = {
@@ -274,6 +276,25 @@ def _select_by_neo4j_textlabels(
     if not term_candidates:
         return []
 
+    query_phrases = _extract_query_phrases(normalized_query_text or "")
+    normalized_query_blob = _normalize_label(normalized_query_text or "")
+    specific_terms = [
+        term
+        for term in term_candidates
+        if term not in GENERIC_SUBJECT_TERMS and term not in EN_FILLER_WORDS and len(term) >= 4
+    ]
+    strict_subject_required = bool(specific_terms)
+    if "life cycle" in normalized_query_blob:
+        specific_subject_terms = [
+            term
+            for term in term_candidates
+            if term and term not in GENERIC_SUBJECT_TERMS and " " not in term
+        ]
+        for subject_term in specific_subject_terms:
+            query_phrases.append(f"{subject_term} life cycle")
+            query_phrases.append(f"life cycle {subject_term}")
+    query_phrases = list(dict.fromkeys([phrase for phrase in query_phrases if phrase]))
+
     diagram_key_map: Dict[str, str] = {}
     lookup_keys: List[str] = []
     for diagram in diagrams:
@@ -323,11 +344,32 @@ def _select_by_neo4j_textlabels(
             continue
 
         score = 0.0
+        matched_specific = False
         for term in term_candidates:
             if term in text_blob:
                 score += 3.0
+                if term in specific_terms:
+                    matched_specific = True
             elif any(token in text_blob for token in term.split() if len(token) >= 3):
                 score += 1.0
+                if term in specific_terms:
+                    matched_specific = True
+
+        for phrase in query_phrases:
+            if phrase in text_blob:
+                score += 6.0
+
+        for term in term_candidates:
+            if term in GENERIC_SUBJECT_TERMS:
+                continue
+            combined_phrase = f"{term} life cycle"
+            if combined_phrase in text_blob:
+                score += 10.0
+                if term in specific_terms:
+                    matched_specific = True
+
+        if strict_subject_required and not matched_specific:
+            continue
 
         label_category = _normalize_label(record.get("category", ""))
         if normalized_category and label_category and normalized_category in label_category:
@@ -434,6 +476,115 @@ def _search_diagrams_by_subject_textlabels_global(
     return results
 
 
+def _derive_focus_subject_terms_from_triples(triples: List[Dict[str, str]]) -> List[str]:
+    focus: List[str] = []
+    relation_terms = {
+        "eat", "eats", "consume", "consumes", "feed_on", "feeds_on", "predator_of", "prey_of"
+    }
+
+    for triple in triples:
+        relation = _normalize_label(triple.get("relationship", ""))
+        if relation.startswith("not_"):
+            continue
+
+        if relation in relation_terms:
+            subject_value = _normalize_label(triple.get("subject", ""))
+            object_value = _normalize_label(triple.get("object", ""))
+            if subject_value and subject_value not in GENERIC_SUBJECT_TERMS:
+                focus.append(subject_value)
+            if object_value and object_value not in GENERIC_SUBJECT_TERMS:
+                focus.append(object_value)
+
+    if not focus:
+        return []
+
+    return list(dict.fromkeys(focus))
+
+
+def _search_diagram_by_required_subject_terms(
+    neo4j_service: Neo4jService,
+    postgres_service: PostgresService,
+    required_terms: List[str],
+    limit: int = 3,
+) -> List[Dict[str, Any]]:
+    terms = [
+        _normalize_label(term)
+        for term in required_terms
+        if _normalize_label(term) and _normalize_label(term) not in GENERIC_SUBJECT_TERMS
+    ]
+    terms = list(dict.fromkeys(terms))
+    if len(terms) < 2:
+        return []
+
+    cypher = """
+    MATCH (tl)
+    WHERE (
+        any(lbl IN labels(tl) WHERE toLower(lbl) = 'textlabel')
+        OR toLower(coalesce(tl.type, '')) IN ['text_label', 'textlabel']
+    )
+    WITH tl,
+         toLower(trim(coalesce(tl.diagram_id, tl.diagramId, tl.image_id, tl.imageId, ''))) AS diagram_id,
+         toLower(trim(
+            coalesce(tl.value, '') + ' ' +
+            coalesce(tl.replacement_text, '') + ' ' +
+            coalesce(tl.text, '') + ' ' +
+            coalesce(tl.label, '') + ' ' +
+            coalesce(tl.name, '')
+         )) AS text_blob
+    WHERE diagram_id <> '' AND text_blob <> ''
+    RETURN diagram_id, text_blob
+    """
+
+    try:
+        records = neo4j_service.session.run(cypher)
+    except Exception:
+        return []
+
+    coverage: Dict[str, set] = {}
+    for record in records:
+        diagram_id_raw = _normalize_label(record.get("diagram_id", ""))
+        text_blob = _normalize_label(record.get("text_blob", ""))
+        if not diagram_id_raw or not text_blob:
+            continue
+
+        matched_terms = coverage.setdefault(diagram_id_raw, set())
+        for term in terms:
+            if term in text_blob:
+                matched_terms.add(term)
+
+    if not coverage:
+        return []
+
+    threshold = min(2, len(terms))
+    candidate_ids = [
+        item[0]
+        for item in sorted(coverage.items(), key=lambda kv: len(kv[1]), reverse=True)
+        if len(item[1]) >= threshold
+    ][: max(1, limit)]
+
+    results: List[Dict[str, Any]] = []
+    for raw_id in candidate_ids:
+        lookup_ids = [raw_id]
+        if not re.search(r"\.(png|jpg|jpeg|webp)$", raw_id):
+            lookup_ids.extend([f"{raw_id}.png", f"{raw_id}.jpg", f"{raw_id}.jpeg", f"{raw_id}.webp"])
+
+        matched = None
+        for lookup_id in lookup_ids:
+            diagram = postgres_service.get_diagram(lookup_id)
+            if diagram:
+                matched = {
+                    "diagram_id": diagram.id,
+                    "image_path": diagram.image_path,
+                    "category_id": diagram.category_id,
+                }
+                break
+
+        if matched:
+            results.append(matched)
+
+    return results
+
+
 def _select_best_diagram_by_category_and_subject(
     postgres_service: PostgresService,
     neo4j_service: Neo4jService,
@@ -479,13 +630,59 @@ def _create_video_recommendations(category_name: Optional[str], subject_terms: L
         topic_parts.append(query_text)
 
     topic = " ".join([part for part in topic_parts if part]).strip() or "stem science education"
-    query = re.sub(r"\s+", " ", topic).strip().replace(" ", "+")
+    normalized_query = re.sub(r"\s+", " ", topic).strip()
+    resolved_watch_url = _resolve_youtube_watch_url_from_query(normalized_query)
+    query = quote_plus(normalized_query)
     return [
         {
             "title": f"YouTube recommendation for {topic}",
-            "url": f"https://www.youtube.com/results?search_query={query}",
+            "url": resolved_watch_url or f"https://www.youtube.com/results?search_query={query}",
         }
     ]
+
+
+def _create_video_recommendations_from_queries(queries: List[str]) -> List[Dict[str, str]]:
+    recommendations: List[Dict[str, str]] = []
+    for raw_query in queries or []:
+        query = _normalize_label(str(raw_query))
+        if not query:
+            continue
+        resolved_watch_url = _resolve_youtube_watch_url_from_query(query)
+        recommendations.append(
+            {
+                "title": f"YouTube recommendation for {query}",
+                "url": resolved_watch_url or f"https://www.youtube.com/results?search_query={quote_plus(query)}",
+            }
+        )
+    return recommendations
+
+
+def _resolve_youtube_watch_url_from_query(query: str) -> Optional[str]:
+    normalized = re.sub(r"\s+", " ", (query or "")).strip()
+    if not normalized:
+        return None
+
+    search_url = f"https://www.youtube.com/results?search_query={quote_plus(normalized)}"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        )
+    }
+
+    try:
+        response = requests.get(search_url, headers=headers, timeout=10)
+        if response.status_code >= 400 or not response.text:
+            return None
+
+        match = re.search(r'"videoId":"([A-Za-z0-9_-]{11})"', response.text)
+        if match:
+            return f"https://www.youtube.com/watch?v={match.group(1)}"
+    except Exception:
+        return None
+
+    return None
 
 
 def _build_final_output(
@@ -494,16 +691,27 @@ def _build_final_output(
     category_name: Optional[str],
     subject_terms: List[str],
     query_text: Optional[str],
+    model_output: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     base_description = " ".join([desc for desc in descriptions if desc]).strip()
     if not base_description:
         focus = subject_terms[0] if subject_terms else (category_name or "the requested STEM concept")
         base_description = f"This STEM diagram explains {focus} with visual relationships for easier learning."
 
+    creative_output = (model_output or {}).get("creative_recommendation") or {}
+    creative_description = creative_output.get("description")
+    if isinstance(creative_description, str) and creative_description.strip():
+        base_description = creative_description.strip()
+
+    creative_videos = _create_video_recommendations_from_queries(creative_output.get("youtube_queries") or [])
+    video_recommendations = creative_videos or _create_video_recommendations(category_name, subject_terms, query_text)
+    scientific_analysis = creative_output.get("scientific_analysis") or {}
+
     return {
         "diagram": matched_diagrams[0] if matched_diagrams else None,
         "description": base_description,
-        "video_recommendations": _create_video_recommendations(category_name, subject_terms, query_text),
+        "video_recommendations": video_recommendations,
+        "scientific_analysis": scientific_analysis,
     }
 
 
@@ -515,6 +723,49 @@ def _derive_subject_terms_from_text(normalized_en_text: str) -> List[str]:
         if token and token not in EN_FILLER_WORDS and token not in GENERIC_SUBJECT_TERMS and len(token) >= 3
     ]
     return list(dict.fromkeys(tokens))
+
+
+def _extract_query_phrases(normalized_en_text: str, max_n: int = 4) -> List[str]:
+    tokens = [
+        token
+        for token in _normalize_label(normalized_en_text).split()
+        if token and token not in EN_FILLER_WORDS
+    ]
+    if not tokens:
+        return []
+
+    phrases: List[str] = []
+    upper = min(max_n, len(tokens))
+    for size in range(2, upper + 1):
+        for i in range(len(tokens) - size + 1):
+            phrase_tokens = tokens[i:i + size]
+            if all(token in GENERIC_SUBJECT_TERMS for token in phrase_tokens):
+                continue
+            phrase = " ".join(phrase_tokens)
+            if len(phrase) >= 8:
+                phrases.append(phrase)
+
+    return list(dict.fromkeys(phrases))
+
+
+def _extract_core_subject_terms(subject_terms: List[str], normalized_query_text: Optional[str]) -> List[str]:
+    candidate_terms = _safe_terms(subject_terms)
+    candidate_terms.extend(_derive_subject_terms_from_text(normalized_query_text or ""))
+
+    core_terms: List[str] = []
+    for term in list(dict.fromkeys(candidate_terms)):
+        normalized_term = _normalize_label(term)
+        if not normalized_term:
+            continue
+        if normalized_term in GENERIC_SUBJECT_TERMS:
+            continue
+        if normalized_term in EN_FILLER_WORDS:
+            continue
+        if len(normalized_term) < 4:
+            continue
+        core_terms.append(normalized_term)
+
+    return list(dict.fromkeys(core_terms))
 
 
 def _slugify_identifier(value: str, fallback: str = "autolearned") -> str:
@@ -618,7 +869,8 @@ def _parse_triple_from_text(text: str) -> Optional[Dict[str, str]]:
     if not text:
         return None
 
-    parts = re.split(r"\s*(?:->|=>|\||,|;|—|-)\s*", text)
+    # Restrict explicit triple syntax to avoid mis-parsing natural long sentences.
+    parts = re.split(r"\s*(?:->|=>|\||;)\s*", text)
     parts = [p.strip() for p in parts if p.strip()]
 
     if len(parts) >= 3:
@@ -805,6 +1057,7 @@ def query_stem_multimedia(
     pending_learning_item: Optional[Dict[str, Any]] = None
     final_output: Optional[Dict[str, Any]] = None
     phase: Optional[str] = None
+    analysis_case: Optional[str] = None
 
     try:
         model_files = None
@@ -840,6 +1093,7 @@ def query_stem_multimedia(
             raise HTTPException(status_code=502, detail=f"Model analyze error: {str(e)}")
 
         phase = model_output.get("phase") if model_output else None
+        analysis_case = model_output.get("analysis_case") if model_output else None
         normalized_query_text = (
             model_output.get("corrected_query_en")
             or model_output.get("normalized_query_en")
@@ -855,10 +1109,13 @@ def query_stem_multimedia(
 
         for inferred_triple in model_output.get("sro_candidates", []) if model_output else []:
             if inferred_triple.get("subject") and inferred_triple.get("relationship") and inferred_triple.get("object"):
+                relation_value = _normalize_label(inferred_triple.get("relationship"))
+                if relation_value.startswith("not_"):
+                    continue
                 triples.append(
                     {
                         "subject": _normalize_label(inferred_triple.get("subject")),
-                        "relationship": _normalize_label(inferred_triple.get("relationship")),
+                        "relationship": relation_value,
                         "object": _normalize_label(inferred_triple.get("object")),
                     }
                 )
@@ -869,6 +1126,7 @@ def query_stem_multimedia(
                 triples.insert(0, triple_from_text)
 
         triples = [dict(item) for item in {tuple(t.items()) for t in triples if t.get("subject") and t.get("relationship") and t.get("object")}]
+        triple_focus_terms = _derive_focus_subject_terms_from_triples(triples)
 
         query_results: List[Dict[str, Any]] = []
 
@@ -879,6 +1137,47 @@ def query_stem_multimedia(
             + labels
             + _derive_subject_terms_from_text(normalized_query_text or "")
         )
+        core_subject_terms = _extract_core_subject_terms(subject_terms, normalized_query_text)
+
+        if len(core_subject_terms) >= 2:
+            strict_core_diagrams = _search_diagram_by_required_subject_terms(
+                neo4j_service,
+                postgres_service,
+                required_terms=core_subject_terms,
+                limit=3,
+            )
+            if strict_core_diagrams:
+                routing_mode = "subject_intersection_priority"
+                descriptions = [
+                    f"Resolved by required subject intersection in TextLabels: {', '.join(core_subject_terms[:4])}"
+                ]
+                query_results = [
+                    {
+                        "triple": {
+                            "subject": " and ".join(core_subject_terms[:2]),
+                            "relationship": "subject_intersection",
+                            "object": strict_core_diagrams[0].get("diagram_id"),
+                        },
+                        "results": {
+                            "postgres": {
+                                "categories": [],
+                                "diagrams": _first_diagram(strict_core_diagrams),
+                            },
+                            "neo4j": [],
+                            "mongo": [],
+                            "descriptions": descriptions,
+                            "diagrams": _first_diagram(strict_core_diagrams),
+                        },
+                    }
+                ]
+                final_output = _build_final_output(
+                    _first_diagram(strict_core_diagrams),
+                    descriptions,
+                    None,
+                    core_subject_terms,
+                    normalized_query_text or query_text,
+                    model_output=model_output,
+                )
 
         if model_category_candidates:
             routing_mode = "category_shortcut"
@@ -938,6 +1237,7 @@ def query_stem_multimedia(
                 top_category.get("category_name"),
                 subject_terms,
                 normalized_query_text or query_text,
+                model_output=model_output,
             )
 
         if not query_results and normalized_query_text:
@@ -992,11 +1292,52 @@ def query_stem_multimedia(
                     category_matches[0]["category_name"],
                     subject_terms,
                     normalized_query_text or query_text,
+                    model_output=model_output,
+                )
+
+        if not query_results and len(triple_focus_terms) >= 2:
+            strict_diagrams = _search_diagram_by_required_subject_terms(
+                neo4j_service,
+                postgres_service,
+                required_terms=triple_focus_terms,
+                limit=3,
+            )
+            if strict_diagrams:
+                routing_mode = "triple_subject_textlabel"
+                descriptions = [
+                    f"Resolved diagram by required TextLabel intersection: {', '.join(triple_focus_terms)}"
+                ]
+                query_results = [
+                    {
+                        "triple": {
+                            "subject": " and ".join(triple_focus_terms[:2]),
+                            "relationship": "textlabel_intersection",
+                            "object": strict_diagrams[0].get("diagram_id"),
+                        },
+                        "results": {
+                            "postgres": {
+                                "categories": [],
+                                "diagrams": _first_diagram(strict_diagrams),
+                            },
+                            "neo4j": [],
+                            "mongo": [],
+                            "descriptions": descriptions,
+                            "diagrams": _first_diagram(strict_diagrams),
+                        },
+                    }
+                ]
+                final_output = _build_final_output(
+                    _first_diagram(strict_diagrams),
+                    descriptions,
+                    None,
+                    triple_focus_terms,
+                    normalized_query_text or query_text,
+                    model_output=model_output,
                 )
 
         if not query_results and triples:
             routing_mode = "triple"
-            query_results = [
+            triple_results = [
                 {
                     "triple": triple,
                     "results": _query_databases(
@@ -1011,20 +1352,80 @@ def query_stem_multimedia(
                 for triple in triples
             ]
 
-            merged_descriptions: List[str] = []
-            merged_diagrams: List[Dict[str, Any]] = []
-            for item in query_results:
-                merged_descriptions.extend(item.get("results", {}).get("descriptions", []))
-                merged_diagrams.extend(item.get("results", {}).get("diagrams", []))
-            if merged_diagrams:
-                unique_diagrams = list({d.get("diagram_id"): d for d in merged_diagrams if d.get("diagram_id")}.values())
-                final_output = _build_final_output(
-                    _first_diagram(unique_diagrams),
-                    merged_descriptions,
-                    None,
-                    subject_terms,
-                    normalized_query_text or query_text,
+            intersection_diagrams: List[Dict[str, Any]] = []
+            if len(triple_results) >= 2:
+                diagram_sets: List[set] = []
+                for item in triple_results:
+                    result_neo4j = item.get("results", {}).get("neo4j", [])
+                    ids = {
+                        _normalize_label(row.get("diagram_id", ""))
+                        for row in result_neo4j
+                        if _normalize_label(row.get("diagram_id", ""))
+                    }
+                    if ids:
+                        diagram_sets.append(ids)
+
+                if len(diagram_sets) >= 2:
+                    shared_ids = set.intersection(*diagram_sets)
+                    for raw_id in sorted(shared_ids):
+                        lookup_ids = [raw_id]
+                        if not re.search(r"\.(png|jpg|jpeg|webp)$", raw_id):
+                            lookup_ids.extend([f"{raw_id}.png", f"{raw_id}.jpg", f"{raw_id}.jpeg", f"{raw_id}.webp"])
+
+                        resolved = None
+                        for lookup_id in lookup_ids:
+                            diagram_obj = postgres_service.get_diagram(lookup_id)
+                            if diagram_obj:
+                                resolved = {
+                                    "diagram_id": diagram_obj.id,
+                                    "image_path": diagram_obj.image_path,
+                                    "category_id": diagram_obj.category_id,
+                                }
+                                break
+
+                        if resolved:
+                            intersection_diagrams.append(resolved)
+
+            if intersection_diagrams:
+                query_results = triple_results
+                routing_mode = "triple_intersection"
+                triple_summary = ", ".join(
+                    [
+                        f"{t.get('subject')} {t.get('relationship')} {t.get('object')}"
+                        for t in triples[:4]
+                    ]
                 )
+                descriptions = [
+                    f"Resolved by shared diagram across triples: {triple_summary}"
+                ]
+                final_output = _build_final_output(
+                    _first_diagram(intersection_diagrams),
+                    descriptions,
+                    None,
+                    triple_focus_terms or subject_terms,
+                    normalized_query_text or query_text,
+                    model_output=model_output,
+                )
+
+            if not final_output:
+                merged_descriptions: List[str] = []
+                merged_diagrams: List[Dict[str, Any]] = []
+                for item in triple_results:
+                    merged_descriptions.extend(item.get("results", {}).get("descriptions", []))
+                    merged_diagrams.extend(item.get("results", {}).get("diagrams", []))
+                if merged_diagrams:
+                    unique_diagrams = list({d.get("diagram_id"): d for d in merged_diagrams if d.get("diagram_id")}.values())
+                    query_results = triple_results
+                    final_output = _build_final_output(
+                        _first_diagram(unique_diagrams),
+                        merged_descriptions,
+                        None,
+                        subject_terms,
+                        normalized_query_text or query_text,
+                        model_output=model_output,
+                    )
+                else:
+                    query_results = []
 
         if not query_results and normalized_query_text:
             routing_mode = "subject_fallback"
@@ -1075,6 +1476,7 @@ def query_stem_multimedia(
                         first_category.get("category_name") if first_category else None,
                         [subject_term],
                         normalized_query_text or query_text,
+                        model_output=model_output,
                     )
                     break
 
@@ -1125,6 +1527,7 @@ def query_stem_multimedia(
                     category_name,
                     subject_terms,
                     normalized_query_text or query_text,
+                    model_output=model_output,
                 )
 
         if not query_results:
@@ -1137,10 +1540,18 @@ def query_stem_multimedia(
                     "image_url": saved_image_url,
                     "user_id": user_id,
                     "model_output": model_output,
+                    "analysis_case": analysis_case,
                     "reason": "No category/subject/SRO match found in current knowledge base",
                     "status": "pending",
                 }
             )
+
+        if routing_mode == "category_shortcut":
+            analysis_case = "case_1_category_keyword"
+        elif routing_mode in {"triple", "triple_intersection", "subject_fallback", "subject_textlabel_global", "triple_subject_textlabel", "subject_intersection_priority"}:
+            analysis_case = "case_2_subject_or_sro"
+        elif routing_mode == "pending_learning":
+            analysis_case = "case_3_pending_learning"
 
         log_payload = {
             "type": "mixed" if query_text and image else "image" if image else "text",
@@ -1151,6 +1562,7 @@ def query_stem_multimedia(
             "user_id": user_id,
             "routing_mode": routing_mode,
             "phase": phase,
+            "analysis_case": analysis_case,
             "triples": triples,
             "timestamp": datetime.utcnow().isoformat()
         }
@@ -1165,6 +1577,7 @@ def query_stem_multimedia(
                 "normalized_text": normalized_query_text,
                 "routing_mode": routing_mode,
                 "phase": phase,
+                "analysis_case": analysis_case,
                 "image_url": saved_image_url
             },
             "model_output": model_output,

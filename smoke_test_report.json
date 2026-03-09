@@ -1,0 +1,122 @@
+[
+  {
+    "id": 1,
+    "topic": "ladybug life cycle",
+    "query": "Hãy cho tôi biết vòng đời của con bọ rùa diễn ra như thế nào?",
+    "status": "diagram_found",
+    "routing_mode": "category_shortcut",
+    "phase": "text",
+    "analysis_case": "case_1_category_keyword",
+    "diagram_id": "105.png",
+    "description": "Matched category 'lifeCycles' from keyword(s): life cycle, life, cycle Matched category 'rockCycle' from keyword(s): cycle Matched category 'waterCNPCycle' from keyword(s): cycle Matched category 'foodChainsWebs' from ke",
+    "pending_item_id": null
+  },
+  {
+    "id": 2,
+    "topic": "water cycle",
+    "query": "Vòng tuần hoàn nước có các quy trình như thế nào?",
+    "status": "diagram_found",
+    "routing_mode": "category_shortcut",
+    "phase": "text",
+    "analysis_case": "case_1_category_keyword",
+    "diagram_id": "1483.png",
+    "description": "Matched category 'waterCNPCycle' from keyword(s): water, cycle Matched category 'lifeCycles' from keyword(s): cycle Matched category 'rockCycle' from keyword(s): cycle",
+    "pending_item_id": null
+  },
+  {
+    "id": 3,
+    "topic": "solar system",
+    "query": "Hệ mặt trời là gì vậy?",
+    "status": "diagram_found",
+    "routing_mode": "category_shortcut",
+    "phase": "text",
+    "analysis_case": "case_1_category_keyword",
+    "diagram_id": "1422.png",
+    "description": "Matched category 'solarSystem' from keyword(s): solar system, solar, system",
+    "pending_item_id": null
+  },
+  {
+    "id": 4,
+    "topic": "volcano structure",
+    "query": "Bạn cho tôi một hình ảnh cấu trúc của núi lửa được không?",
+    "status": "diagram_found",
+    "routing_mode": "category_shortcut",
+    "phase": "text",
+    "analysis_case": "case_1_category_keyword",
+    "diagram_id": "1455.png",
+    "description": "Matched category 'volcano' from keyword(s): truc, volcano Matched category 'faultsEarthquakes' from keyword(s): truc Matched category 'partsOfTheEarth' from keyword(s): truc Matched category 'rockCycle' from keyword(s): ",
+    "pending_item_id": null
+  },
+  {
+    "id": 5,
+    "topic": "solar eclipse",
+    "query": "Thông tin về Nhật thực",
+    "status": "diagram_found",
+    "routing_mode": "category_shortcut",
+    "phase": "text",
+    "analysis_case": "case_1_category_keyword",
+    "diagram_id": "1630.png",
+    "description": "Matched category 'eclipses' from keyword(s): eclipse Matched category 'solarSystem' from keyword(s): solar",
+    "pending_item_id": null
+  },
+  {
+    "id": 6,
+    "topic": "parts of flower",
+    "query": "Các phần của hoa",
+    "status": "diagram_found",
+    "routing_mode": "subject_intersection_priority",
+    "phase": "text",
+    "analysis_case": "case_2_subject_or_sro",
+    "diagram_id": "1014.png",
+    "description": "Resolved by required subject intersection in TextLabels: parts, flower",
+    "pending_item_id": null
+  },
+  {
+    "id": 7,
+    "topic": "chicken leg duck leg",
+    "query": "Chân của con gà với con vịt như thế nào",
+    "status": "diagram_found",
+    "routing_mode": "subject_intersection_priority",
+    "phase": "text",
+    "analysis_case": "case_2_subject_or_sro",
+    "diagram_id": "1002.png",
+    "description": "Resolved by required subject intersection in TextLabels: chicken, duck",
+    "pending_item_id": null
+  },
+  {
+    "id": 8,
+    "topic": "electric circuit",
+    "query": "Làm sao để vẽ mạch điện",
+    "status": "diagram_found",
+    "routing_mode": "subject_intersection_priority",
+    "phase": "text",
+    "analysis_case": "case_2_subject_or_sro",
+    "diagram_id": "1053.png",
+    "description": "Resolved by required subject intersection in TextLabels: draw, electric, circuit",
+    "pending_item_id": null
+  },
+  {
+    "id": 9,
+    "topic": "photosynthesis",
+    "query": "Qúa trình quang hợp diễn ra làm sao?",
+    "status": "diagram_found",
+    "routing_mode": "category_shortcut",
+    "phase": "text",
+    "analysis_case": "case_1_category_keyword",
+    "diagram_id": "1263.png",
+    "description": "Matched category 'photosynthesisRespiration' from keyword(s): photosynthesis, process Matched category 'faultsEarthquakes' from keyword(s): process Matched category 'foodChainsWebs' from keyword(s): process Matched categ",
+    "pending_item_id": null
+  },
+  {
+    "id": 10,
+    "topic": "food chain rabbit fox grass",
+    "query": "Sao con thỏ ăn cỏ và cáo ăn thỏ, mà thỏ lại không ăn cáo",
+    "status": "diagram_found",
+    "routing_mode": "subject_intersection_priority",
+    "phase": "text",
+    "analysis_case": "case_2_subject_or_sro",
+    "diagram_id": "1324.png",
+    "description": "Resolved by required subject intersection in TextLabels: rabbit, grass",
+    "pending_item_id": null
+  }
+]

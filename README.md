@@ -48,6 +48,12 @@ docker-compose up -d
 
 # API sẽ có sẵn tại: http://localhost:8000
 
+# Smoke test 10 input mẫu STEM (pha text hoặc multimodal)
+python scripts/smoke_test_stem_queries.py --base-url http://localhost:8000
+
+# Nếu muốn ép chạy multimodal (đính kèm cùng một ảnh cho tất cả mẫu)
+python scripts/smoke_test_stem_queries.py --base-url http://localhost:8000 --image-path app/images/uploads/sample.jpg
+
 # Truy vấn bộ ba
 curl "http://localhost:8000/api/integration/search/triple?subject=bee&relationship=on_top_of&object=flower"
 
