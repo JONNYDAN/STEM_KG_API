@@ -19,6 +19,7 @@ class MongoService:
         self.subjects = self.db["subjects"]
         self.query_logs = self.db["query_logs"]
         self.pending_learning = self.db["pending_learning"]
+        self.diagram_explanations = self.db["diagram_explanations"]
     
     def create_diagram_annotation(self, annotation: DiagramAnnotationCreate) -> Dict[str, Any]:
         """Tạo annotation mới cho diagram"""
@@ -239,3 +240,70 @@ class MongoService:
             return self.get_pending_learning_item_by_id(item_id)
         except Exception:
             return None
+
+    # ========== DIAGRAM EXPLANATION CACHE ==========
+    def get_diagram_explanation(
+        self,
+        diagram_id: str,
+        language: str,
+        topic_key: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        query: Dict[str, Any] = {
+            "diagram_id": diagram_id,
+            "language": language,
+        }
+        if topic_key:
+            query["topic_key"] = topic_key
+
+        result = self.diagram_explanations.find_one(query)
+        if not result:
+            return None
+
+        result["_id"] = str(result["_id"])
+        self.diagram_explanations.update_one(
+            {"_id": ObjectId(result["_id"])},
+            {
+                "$set": {"last_used_at": datetime.now()},
+                "$inc": {"usage_count": 1},
+            },
+        )
+        return result
+
+    def upsert_diagram_explanation(
+        self,
+        diagram_id: str,
+        language: str,
+        topic_key: str,
+        explanation: Dict[str, Any],
+        source_query: Optional[str] = None,
+        generator: str = "template",
+    ) -> Dict[str, Any]:
+        now = datetime.now()
+        filter_query = {
+            "diagram_id": diagram_id,
+            "language": language,
+            "topic_key": topic_key,
+        }
+        payload = {
+            "diagram_id": diagram_id,
+            "language": language,
+            "topic_key": topic_key,
+            "explanation": explanation,
+            "generator": generator,
+            "source_query": source_query,
+            "updated_at": now,
+            "last_used_at": now,
+        }
+        self.diagram_explanations.update_one(
+            filter_query,
+            {
+                "$set": payload,
+                "$setOnInsert": {"created_at": now, "usage_count": 0},
+            },
+            upsert=True,
+        )
+
+        result = self.diagram_explanations.find_one(filter_query)
+        if result:
+            result["_id"] = str(result["_id"])
+        return result or {}

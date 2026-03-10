@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 import os
 import re
+import json
 import uuid
 import requests
 import unicodedata
@@ -685,6 +686,600 @@ def _resolve_youtube_watch_url_from_query(query: str) -> Optional[str]:
     return None
 
 
+def _is_routing_hint_description(text: str) -> bool:
+    value = _normalize_label(_strip_accents(text or ""))
+    if not value:
+        return False
+
+    routing_patterns = [
+        "resolved by",
+        "required subject intersection",
+        "textlabel",
+        "category match",
+        "matched category",
+        "subject intersection",
+        "via terms",
+        "subject_fallback",
+        "routing",
+    ]
+    return any(pattern in value for pattern in routing_patterns)
+
+
+def _filter_semantic_descriptions(descriptions: List[str]) -> List[str]:
+    clean_items = [str(item).strip() for item in descriptions if isinstance(item, str) and item.strip()]
+    semantic_items = [item for item in clean_items if not _is_routing_hint_description(item)]
+    return semantic_items
+
+
+def _detect_explanation_language(
+    query_text: Optional[str],
+    descriptions: List[str],
+    subject_terms: List[str],
+) -> str:
+    primary_text = (query_text or "").strip()
+    fallback_text = " ".join(descriptions[:3] + subject_terms[:5]).strip()
+    source = primary_text or fallback_text
+    if not source:
+        return "en"
+
+    lowered = source.lower()
+    ascii_only = _strip_accents(lowered)
+
+    # Explicit Vietnamese markers (with diacritics)
+    if re.search(r"[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]", lowered):
+        return "vi"
+
+    # Vietnamese stopword heuristic (works even without accents)
+    vi_markers = {
+        "tai", "sao", "nhu", "the", "nao", "vi", "du", "cho", "toi", "biet", "hay",
+        "vong", "tuan", "hoan", "nuoc", "tho", "cao", "co", "la", "gi", "khong", "voi",
+        "cac", "quy", "trinh", "dien", "ra", "phan", "tich", "giai", "thich",
+        "qua", "trinh", "quang", "hop", "thuc", "vat",
+    }
+    tokens = re.findall(r"\b[a-zA-Z]+\b", ascii_only)
+    vi_hits = sum(1 for token in tokens if token in vi_markers)
+    if vi_hits >= 2:
+        return "vi"
+
+    return "en"
+
+
+def _detect_stem_topic(
+    category_name: Optional[str],
+    subject_terms: List[str],
+    query_text: Optional[str],
+    descriptions: List[str],
+) -> Dict[str, str]:
+    text_blob = " ".join(
+        [category_name or "", query_text or "", " ".join(subject_terms), " ".join(descriptions)]
+    )
+    normalized = _normalize_label(_strip_accents(text_blob))
+
+    if any(
+        keyword in normalized
+        for keyword in [
+            "food chain",
+            "chuoi thuc an",
+            "predator",
+            "prey",
+            "rabbit",
+            "fox",
+            "grass",
+            "cao an",
+            "tho an",
+            "an co",
+        ]
+    ):
+        return {
+            "key": "food_chain",
+            "focus": "food chain",
+        }
+
+    if any(keyword in normalized for keyword in ["water cycle", "vong tuan hoan nuoc", "evaporation", "condensation"]):
+        return {
+            "key": "water_cycle",
+            "focus": "water cycle",
+        }
+
+    if any(keyword in normalized for keyword in ["life cycle", "vong doi", "metamorphosis"]):
+        return {
+            "key": "life_cycle",
+            "focus": "life cycle",
+        }
+
+    if any(
+        keyword in normalized
+        for keyword in [
+            "photosynthesis",
+            "quang hop",
+            "chlorophyll",
+            "co2",
+            "carbon dioxide",
+            "sunlight",
+            "glucose",
+        ]
+    ):
+        return {
+            "key": "photosynthesis",
+            "focus": "photosynthesis",
+        }
+
+    fallback_focus = subject_terms[0] if subject_terms else (category_name or "chủ đề STEM")
+    return {
+        "key": "generic",
+        "focus": fallback_focus,
+    }
+
+
+def _extract_food_chain_roles(
+    subject_terms: List[str],
+    query_text: Optional[str],
+    descriptions: List[str],
+) -> Dict[str, str]:
+    source = _normalize_label(_strip_accents(" ".join([" ".join(subject_terms), query_text or "", " ".join(descriptions)])))
+
+    producer = "cỏ/thực vật"
+    herbivore = "động vật ăn cỏ"
+    predator = "động vật ăn thịt"
+
+    if any(token in source for token in ["grass", "co", "plant", "thuc vat", "leaf", "la cay"]):
+        producer = "cỏ/thực vật"
+    if any(token in source for token in ["rabbit", "tho", "deer", "nai", "goat", "cow", "bo"]):
+        herbivore = "thỏ (động vật ăn cỏ)"
+    if any(token in source for token in ["fox", "cao", "wolf", "soi", "tiger", "ho", "eagle", "dai bang"]):
+        predator = "cáo (động vật săn mồi)"
+
+    return {
+        "producer": producer,
+        "herbivore": herbivore,
+        "predator": predator,
+    }
+
+
+def _topic_title_by_language(topic_key: str, focus: str, language: str) -> str:
+    if topic_key == "food_chain":
+        return "Chuỗi thức ăn và quan hệ dinh dưỡng" if language == "vi" else "Food chain and trophic relationships"
+    if topic_key == "water_cycle":
+        return "Vòng tuần hoàn nước" if language == "vi" else "Water cycle"
+    if topic_key == "life_cycle":
+        return "Vòng đời sinh học" if language == "vi" else "Biological life cycle"
+    if topic_key == "photosynthesis":
+        return "Quá trình quang hợp" if language == "vi" else "Photosynthesis process"
+    return (f"Chủ đề STEM: {focus}" if language == "vi" else f"STEM topic: {focus}")
+
+
+def _build_diagram_explanation(
+    category_name: Optional[str],
+    subject_terms: List[str],
+    query_text: Optional[str],
+    descriptions: List[str],
+    scientific_analysis: Dict[str, Any],
+) -> Dict[str, Any]:
+    semantic_descriptions = _filter_semantic_descriptions(descriptions)
+    topic = _detect_stem_topic(category_name, subject_terms, query_text, semantic_descriptions)
+    focus = topic.get("focus") or (subject_terms[0] if subject_terms else (category_name or "chủ đề STEM"))
+    topic_key = topic.get("key")
+    language = _detect_explanation_language(query_text, semantic_descriptions, subject_terms)
+    topic_title = _topic_title_by_language(topic_key or "generic", focus, language)
+
+    summary = str(scientific_analysis.get("summary") or "").strip()
+    if not summary and semantic_descriptions:
+        summary = semantic_descriptions[0]
+
+    if not summary and topic_key == "food_chain":
+        roles = _extract_food_chain_roles(subject_terms, query_text, semantic_descriptions)
+        if language == "vi":
+            summary = (
+                f"Diagram mô tả chuỗi thức ăn, trong đó {roles['producer']} là bậc sản xuất, "
+                f"{roles['herbivore']} tiêu thụ thực vật và {roles['predator']} tiêu thụ bậc thấp hơn. "
+                "Vì vậy thỏ ăn cỏ nhưng không ăn cáo do khác biệt sinh học về cấu tạo răng-hệ tiêu hóa "
+                "và vị trí dinh dưỡng trong lưới thức ăn."
+            )
+        else:
+            summary = (
+                f"This diagram describes a food chain where {roles['producer']} acts as the producer level, "
+                f"{roles['herbivore']} consumes plants, and {roles['predator']} feeds on lower trophic levels. "
+                "A rabbit eats grass but does not eat a fox because of biological constraints in dentition, "
+                "digestive adaptation, and trophic position."
+            )
+
+    if not summary and topic_key == "photosynthesis":
+        if language == "vi":
+            summary = (
+                "Quang hợp là quá trình thực vật sử dụng năng lượng ánh sáng để chuyển CO₂ và nước thành glucose, "
+                "đồng thời giải phóng O₂. Diagram giúp thấy rõ nơi diễn ra (lục lạp), điều kiện đầu vào và sản phẩm đầu ra."
+            )
+        else:
+            summary = (
+                "Photosynthesis is the process in which plants use light energy to convert CO2 and water into glucose, "
+                "while releasing O2. The diagram clarifies reaction location (chloroplast), required inputs, and outputs."
+            )
+
+    if not summary:
+        if language == "vi":
+            summary = (
+                f"Diagram này biểu diễn '{focus}' theo cấu trúc hệ thống, làm rõ cơ chế tương tác giữa "
+                "các thành phần, điều kiện vận hành và hệ quả ở từng giai đoạn của tiến trình khoa học."
+            )
+        else:
+            summary = (
+                f"This diagram represents '{focus}' as a system-level model, clarifying component interactions, "
+                "operating conditions, and stage-wise scientific outcomes."
+            )
+
+    reasoning_steps = [
+        str(step).strip()
+        for step in (scientific_analysis.get("reasoning_steps") or [])
+        if str(step).strip()
+    ]
+    if not reasoning_steps and semantic_descriptions:
+        reasoning_steps = semantic_descriptions[:4]
+
+    if not reasoning_steps and topic_key == "food_chain":
+        roles = _extract_food_chain_roles(subject_terms, query_text, semantic_descriptions)
+        if language == "vi":
+            reasoning_steps = [
+                f"Xác định bậc dinh dưỡng: {roles['producer']} thuộc nhóm sinh vật sản xuất tạo sinh khối ban đầu.",
+                f"{roles['herbivore']} thuộc nhóm tiêu thụ bậc 1, nhận năng lượng trực tiếp từ thực vật.",
+                f"{roles['predator']} thuộc nhóm tiêu thụ bậc cao hơn, săn mồi để nhận năng lượng từ động vật khác.",
+                "Giải thích quan hệ 'thỏ không ăn cáo': khác biệt cấu tạo cơ thể, tập tính kiếm ăn và vai trò sinh thái khiến chiều năng lượng không đảo ngược.",
+            ]
+        else:
+            reasoning_steps = [
+                f"Identify trophic levels: {roles['producer']} functions as the producer level that generates primary biomass.",
+                f"{roles['herbivore']} is a primary consumer receiving energy directly from plants.",
+                f"{roles['predator']} is a higher-level consumer obtaining energy by predation.",
+                "Explain why a rabbit does not eat a fox: morphology, feeding behavior, and ecological role constrain energy flow direction.",
+            ]
+
+    if not reasoning_steps and topic_key == "photosynthesis":
+        if language == "vi":
+            reasoning_steps = [
+                "Xác định đầu vào của quang hợp: ánh sáng, CO₂ và nước; vị trí chủ yếu là lục lạp trong tế bào lá.",
+                "Pha sáng hấp thụ photon để tạo ATP/NADPH và giải phóng O₂ từ quá trình quang phân ly nước.",
+                "Pha tối (chu trình Calvin) cố định CO₂ để tổng hợp hợp chất hữu cơ, cuối cùng tạo glucose.",
+                "Giải thích các yếu tố ảnh hưởng (cường độ sáng, nồng độ CO₂, nhiệt độ) làm tăng/giảm tốc độ quang hợp.",
+            ]
+        else:
+            reasoning_steps = [
+                "Identify photosynthesis inputs: light, CO2, and water; the main site is the chloroplast in leaf cells.",
+                "Light-dependent reactions capture photons to generate ATP/NADPH and release O2 via water splitting.",
+                "The Calvin cycle fixes CO2 into organic compounds and ultimately produces glucose.",
+                "Explain controlling factors (light intensity, CO2 concentration, temperature) that modulate photosynthetic rate.",
+            ]
+
+    if not reasoning_steps:
+        if language == "vi":
+            reasoning_steps = [
+                f"Xác định các thực thể trung tâm trong hệ '{focus}' và vai trò chức năng của từng thực thể.",
+                "Phân tích hướng dịch chuyển năng lượng/vật chất/thông tin giữa các nút theo đúng chiều nhân quả.",
+                "Làm rõ điều kiện kích hoạt, biến đổi trung gian và trạng thái cân bằng hoặc đầu ra cuối cùng.",
+                "Đối chiếu các vòng phản hồi (feedback) và tác động của biến thiên môi trường lên toàn hệ thống.",
+            ]
+        else:
+            reasoning_steps = [
+                f"Identify the core entities in '{focus}' and define each functional role.",
+                "Track energy/material/information flow across nodes with correct causal direction.",
+                "Clarify triggering conditions, intermediate transformations, and terminal states.",
+                "Examine feedback loops and the effect of environmental variation on system behavior.",
+            ]
+
+    key_points = [
+        str(point).strip()
+        for point in (scientific_analysis.get("key_points") or [])
+        if str(point).strip()
+    ]
+    if not key_points and topic_key == "food_chain":
+        if language == "vi":
+            key_points = [
+                "Chuỗi thức ăn thể hiện dòng năng lượng một chiều từ sinh vật sản xuất đến các bậc tiêu thụ.",
+                "Quan hệ ăn - bị ăn phụ thuộc vào thích nghi sinh học và vị trí dinh dưỡng của từng loài.",
+                "Động vật ăn cỏ không trở thành loài săn mồi đỉnh do giới hạn sinh lý và hành vi kiếm ăn.",
+            ]
+        else:
+            key_points = [
+                "A food chain models one-way energy transfer from producers to consumers.",
+                "Predator-prey interactions are constrained by biological adaptation and trophic position.",
+                "Herbivores do not become apex predators because of physiological and behavioral limits.",
+            ]
+    if not key_points and topic_key == "photosynthesis":
+        if language == "vi":
+            key_points = [
+                "Quang hợp là cơ chế chuyển năng lượng ánh sáng thành năng lượng hóa học tích lũy trong glucose.",
+                "CO₂ và nước là nguyên liệu chính, O₂ là sản phẩm phụ quan trọng cho hô hấp của sinh vật hiếu khí.",
+                "Tốc độ quang hợp phụ thuộc mạnh vào ánh sáng, CO₂, nhiệt độ và tình trạng sinh lý của lá.",
+            ]
+        else:
+            key_points = [
+                "Photosynthesis converts light energy into chemical energy stored in glucose.",
+                "CO2 and water are primary reactants, while O2 is a crucial byproduct for aerobic life.",
+                "Photosynthetic rate is strongly regulated by light, CO2, temperature, and leaf physiology.",
+            ]
+    if not key_points:
+        if language == "vi":
+            key_points = [
+                f"Trọng tâm mô hình là cơ chế vận hành của '{focus}' chứ không chỉ mô tả hiện tượng bề mặt.",
+                "Mỗi bước phản ánh một mắt xích nhân quả có thể kiểm chứng bằng quan sát/thực nghiệm.",
+                "Hiểu đúng thứ tự tiến trình giúp phân biệt yếu tố nguyên nhân, điều kiện và kết quả.",
+            ]
+        else:
+            key_points = [
+                f"The model focuses on the mechanism of '{focus}', not only surface-level phenomena.",
+                "Each stage encodes a causal link that can be validated through observation or experiment.",
+                "Correct sequence interpretation helps separate causes, conditions, and outcomes.",
+            ]
+
+    applications = [
+        str(item).strip()
+        for item in (scientific_analysis.get("applications") or [])
+        if str(item).strip()
+    ]
+    if not applications and topic_key == "food_chain":
+        if language == "vi":
+            applications = [
+                "Phân tích tác động khi một mắt xích trong hệ sinh thái suy giảm hoặc biến mất.",
+                "Giải thích hiện tượng mất cân bằng sinh thái khi số lượng loài săn mồi/con mồi thay đổi mạnh.",
+                "Ứng dụng trong giáo dục môi trường và bảo tồn đa dạng sinh học địa phương.",
+            ]
+        else:
+            applications = [
+                "Assess ecosystem impact when a trophic link declines or disappears.",
+                "Explain ecological imbalance when predator-prey population ratios shift rapidly.",
+                "Apply in environmental education and local biodiversity conservation planning.",
+            ]
+    if not applications and topic_key == "photosynthesis":
+        if language == "vi":
+            applications = [
+                "Giải thích vì sao điều kiện nhà kính (ánh sáng/CO₂/nhiệt độ) ảnh hưởng trực tiếp đến năng suất cây trồng.",
+                "Ứng dụng trong tối ưu hóa chăm sóc cây: tưới, thông gió, bố trí ánh sáng và mật độ trồng.",
+                "Làm nền tảng để học sâu hơn về chu trình carbon và biến đổi khí hậu.",
+            ]
+        else:
+            applications = [
+                "Explain how greenhouse conditions (light/CO2/temperature) directly affect crop productivity.",
+                "Apply to plant-care optimization: irrigation, ventilation, light layout, and planting density.",
+                "Use as a foundation for deeper learning on the carbon cycle and climate change.",
+            ]
+    if not applications:
+        if language == "vi":
+            applications = [
+                "Phân tích hiện tượng tự nhiên và dự đoán xu hướng thay đổi của hệ trong bối cảnh thực tế.",
+                "Thiết kế hoạt động học theo năng lực giải quyết vấn đề và tư duy hệ thống.",
+                "Làm khung tham chiếu để so sánh nhiều mô hình khoa học có cơ chế tương đồng.",
+            ]
+        else:
+            applications = [
+                "Analyze natural phenomena and predict system-level trends in real contexts.",
+                "Design learning activities that develop problem-solving and systems thinking.",
+                "Use as a reference frame for comparing mechanisms across scientific models.",
+            ]
+
+    glossary = [
+        item
+        for item in (scientific_analysis.get("glossary") or [])
+        if isinstance(item, dict) and (item.get("term") or item.get("definition"))
+    ]
+
+    return {
+        "title": (f"Phân tích chuyên sâu: {topic_title}" if language == "vi" else f"Advanced analysis: {topic_title}"),
+        "explanation_level": "advanced",
+        "language": language,
+        "topic_key": topic_key or "generic",
+        "overview": summary,
+        "process_steps": reasoning_steps,
+        "key_takeaways": key_points,
+        "applications": applications,
+        "glossary": glossary,
+        "learning_prompt": (
+            (
+                f"Hãy tái lập luận cơ chế của '{topic_title}' theo chuỗi nhân quả, chỉ ra biến số chi phối "
+                "và nêu một tình huống thực tế có thể kiểm chứng mô hình này."
+            )
+            if language == "vi"
+            else (
+                f"Reconstruct the mechanism of '{topic_title}' as a causal chain, identify controlling variables, "
+                "and propose one real-world scenario to validate the model."
+            )
+        ),
+        "source_query": (query_text or "").strip() or None,
+    }
+
+
+def _extract_json_from_text(raw_text: str) -> Optional[Dict[str, Any]]:
+    if not raw_text:
+        return None
+
+    text = raw_text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    match = re.search(r"\{[\s\S]*\}", text)
+    if not match:
+        return None
+
+    try:
+        parsed = json.loads(match.group(0))
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return None
+
+
+def _generate_explanation_with_gemini(
+    query_text: Optional[str],
+    base_explanation: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    gemini_keys = list(getattr(config, "GEMINI_API_KEYS", []) or [])
+    if not gemini_keys and getattr(config, "GEMINI_API_KEY", ""):
+        gemini_keys = [str(config.GEMINI_API_KEY).strip()]
+
+    gemini_keys = [key for key in gemini_keys if key]
+    if not gemini_keys:
+        return None
+
+    language = base_explanation.get("language") or "en"
+    language_label = "Vietnamese" if language == "vi" else "English"
+    topic_title = base_explanation.get("title") or "STEM topic"
+    topic_key = base_explanation.get("topic_key") or "generic"
+
+    prompt = (
+        "You are a STEM tutor. Generate a precise explanation for one STEM diagram. "
+        f"Write in {language_label}. Keep it curriculum-friendly and scientifically accurate.\n\n"
+        f"User query: {query_text or ''}\n"
+        f"Topic key: {topic_key}\n"
+        f"Topic title: {topic_title}\n"
+        f"Fallback overview: {base_explanation.get('overview') or ''}\n\n"
+        "Return ONLY valid JSON object with fields: "
+        "title (string), overview (string), process_steps (string[]), key_takeaways (string[]), "
+        "applications (string[]), learning_prompt (string)."
+    )
+
+    model_candidates = [
+        str(getattr(config, "GEMINI_MODEL", "") or "").strip(),
+        "gemini-2.0-flash",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash-001",
+        "gemini-2.0-flash-lite",
+    ]
+    model_candidates = [model for model in dict.fromkeys(model_candidates) if model]
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.35,
+            "topP": 0.9,
+            "maxOutputTokens": 800,
+            "responseMimeType": "application/json",
+        },
+    }
+
+    for model_name in model_candidates:
+        endpoint = f"{config.GEMINI_API_BASE}/models/{model_name}:generateContent"
+
+        for key in gemini_keys:
+            try:
+                response = requests.post(
+                    endpoint,
+                    params={"key": key},
+                    json=payload,
+                    timeout=20,
+                )
+                if response.status_code in {401, 403, 429}:
+                    continue
+                if response.status_code == 404:
+                    break
+
+                response.raise_for_status()
+                data = response.json()
+                candidates = data.get("candidates") or []
+                if not candidates:
+                    continue
+
+                parts = ((candidates[0].get("content") or {}).get("parts") or [])
+                if not parts:
+                    continue
+
+                text = "\n".join([str(part.get("text") or "") for part in parts if isinstance(part, dict)])
+                parsed = _extract_json_from_text(text)
+                if not parsed:
+                    continue
+
+                result: Dict[str, Any] = {
+                    "title": str(parsed.get("title") or base_explanation.get("title") or "").strip(),
+                    "overview": str(parsed.get("overview") or base_explanation.get("overview") or "").strip(),
+                    "process_steps": [
+                        str(item).strip() for item in (parsed.get("process_steps") or []) if str(item).strip()
+                    ],
+                    "key_takeaways": [
+                        str(item).strip() for item in (parsed.get("key_takeaways") or []) if str(item).strip()
+                    ],
+                    "applications": [
+                        str(item).strip() for item in (parsed.get("applications") or []) if str(item).strip()
+                    ],
+                    "learning_prompt": str(parsed.get("learning_prompt") or "").strip(),
+                }
+
+                if not result["overview"]:
+                    continue
+
+                return result
+            except Exception:
+                continue
+
+    return None
+
+
+def _resolve_and_cache_diagram_explanation(
+    final_output: Optional[Dict[str, Any]],
+    mongo_service: MongoService,
+    query_text: Optional[str],
+    normalized_query_text: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    if not final_output:
+        return final_output
+
+    diagram = final_output.get("diagram") or {}
+    diagram_id = diagram.get("diagram_id")
+    if not diagram_id:
+        return final_output
+
+    explanation = dict(final_output.get("diagram_explanation") or {})
+    language = explanation.get("language") or "en"
+    topic_key = explanation.get("topic_key") or "generic"
+
+    cached = mongo_service.get_diagram_explanation(diagram_id=diagram_id, language=language, topic_key=topic_key)
+    if cached and isinstance(cached.get("explanation"), dict):
+        cached_explanation = dict(cached.get("explanation") or {})
+        cached_explanation["language"] = cached_explanation.get("language") or language
+        cached_explanation["topic_key"] = cached_explanation.get("topic_key") or topic_key
+        cached_explanation["source"] = "cache"
+        final_output["diagram_explanation"] = cached_explanation
+        return final_output
+
+    ai_explanation = _generate_explanation_with_gemini(
+        query_text=query_text or normalized_query_text,
+        base_explanation=explanation,
+    )
+
+    if ai_explanation:
+        merged_explanation = {
+            **explanation,
+            **ai_explanation,
+            "language": language,
+            "topic_key": topic_key,
+            "source": "gemini",
+            "source_query": (query_text or normalized_query_text or "").strip() or None,
+        }
+        final_output["diagram_explanation"] = merged_explanation
+        mongo_service.upsert_diagram_explanation(
+            diagram_id=diagram_id,
+            language=language,
+            topic_key=topic_key,
+            explanation=merged_explanation,
+            source_query=query_text or normalized_query_text,
+            generator="gemini",
+        )
+        return final_output
+
+    explanation["source"] = explanation.get("source") or "template"
+    final_output["diagram_explanation"] = explanation
+    mongo_service.upsert_diagram_explanation(
+        diagram_id=diagram_id,
+        language=language,
+        topic_key=topic_key,
+        explanation=explanation,
+        source_query=query_text or normalized_query_text,
+        generator="template",
+    )
+    return final_output
+
+
 def _build_final_output(
     matched_diagrams: List[Dict[str, Any]],
     descriptions: List[str],
@@ -706,12 +1301,20 @@ def _build_final_output(
     creative_videos = _create_video_recommendations_from_queries(creative_output.get("youtube_queries") or [])
     video_recommendations = creative_videos or _create_video_recommendations(category_name, subject_terms, query_text)
     scientific_analysis = creative_output.get("scientific_analysis") or {}
+    diagram_explanation = _build_diagram_explanation(
+        category_name=category_name,
+        subject_terms=subject_terms,
+        query_text=query_text,
+        descriptions=descriptions,
+        scientific_analysis=scientific_analysis,
+    )
 
     return {
         "diagram": matched_diagrams[0] if matched_diagrams else None,
         "description": base_description,
         "video_recommendations": video_recommendations,
         "scientific_analysis": scientific_analysis,
+        "diagram_explanation": diagram_explanation,
     }
 
 
@@ -1175,7 +1778,7 @@ def query_stem_multimedia(
                     descriptions,
                     None,
                     core_subject_terms,
-                    normalized_query_text or query_text,
+                    query_text or normalized_query_text,
                     model_output=model_output,
                 )
 
@@ -1236,7 +1839,7 @@ def query_stem_multimedia(
                 descriptions,
                 top_category.get("category_name"),
                 subject_terms,
-                normalized_query_text or query_text,
+                query_text or normalized_query_text,
                 model_output=model_output,
             )
 
@@ -1291,7 +1894,7 @@ def query_stem_multimedia(
                     descriptions,
                     category_matches[0]["category_name"],
                     subject_terms,
-                    normalized_query_text or query_text,
+                    query_text or normalized_query_text,
                     model_output=model_output,
                 )
 
@@ -1331,7 +1934,7 @@ def query_stem_multimedia(
                     descriptions,
                     None,
                     triple_focus_terms,
-                    normalized_query_text or query_text,
+                    query_text or normalized_query_text,
                     model_output=model_output,
                 )
 
@@ -1403,7 +2006,7 @@ def query_stem_multimedia(
                     descriptions,
                     None,
                     triple_focus_terms or subject_terms,
-                    normalized_query_text or query_text,
+                    query_text or normalized_query_text,
                     model_output=model_output,
                 )
 
@@ -1421,7 +2024,7 @@ def query_stem_multimedia(
                         merged_descriptions,
                         None,
                         subject_terms,
-                        normalized_query_text or query_text,
+                        query_text or normalized_query_text,
                         model_output=model_output,
                     )
                 else:
@@ -1475,7 +2078,7 @@ def query_stem_multimedia(
                         descriptions,
                         first_category.get("category_name") if first_category else None,
                         [subject_term],
-                        normalized_query_text or query_text,
+                        query_text or normalized_query_text,
                         model_output=model_output,
                     )
                     break
@@ -1526,7 +2129,7 @@ def query_stem_multimedia(
                     descriptions,
                     category_name,
                     subject_terms,
-                    normalized_query_text or query_text,
+                    query_text or normalized_query_text,
                     model_output=model_output,
                 )
 
@@ -1546,6 +2149,13 @@ def query_stem_multimedia(
                 }
             )
 
+        final_output = _resolve_and_cache_diagram_explanation(
+            final_output=final_output,
+            mongo_service=mongo_service,
+            query_text=query_text,
+            normalized_query_text=normalized_query_text,
+        )
+
         if routing_mode == "category_shortcut":
             analysis_case = "case_1_category_keyword"
         elif routing_mode in {"triple", "triple_intersection", "subject_fallback", "subject_textlabel_global", "triple_subject_textlabel", "subject_intersection_priority"}:
@@ -1564,6 +2174,8 @@ def query_stem_multimedia(
             "phase": phase,
             "analysis_case": analysis_case,
             "triples": triples,
+            "query_results": query_results,
+            "final_output": final_output,
             "timestamp": datetime.utcnow().isoformat()
         }
         log = mongo_service.create_query_log(log_payload)

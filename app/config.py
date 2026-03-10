@@ -31,6 +31,17 @@ class Config:
     # OCR Model API
     MODEL_OCR_URL = os.getenv("MODEL_OCR_URL", "http://localhost:5000/api/analyze_intent")
 
+    # Gemini AI (optional)
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+    _GEMINI_KEYS = [GEMINI_API_KEY.strip()] if GEMINI_API_KEY else []
+    _GEMINI_KEYS.extend([
+        os.getenv(f"GEMINI_API_KEY_{idx}", "").strip()
+        for idx in range(1, 11)
+    ])
+    GEMINI_API_KEYS = [key for key in dict.fromkeys(_GEMINI_KEYS) if key]
+    GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    GEMINI_API_BASE = os.getenv("GEMINI_API_BASE", "https://generativelanguage.googleapis.com/v1beta")
+
     # Uploads
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     IMAGE_DIR = os.getenv("IMAGE_DIR", os.path.join(BASE_DIR, "images"))
