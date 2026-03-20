@@ -56,6 +56,8 @@ class Diagram(Base):
     file_size = Column(Integer, nullable=True)
     trigger_code = Column(String(100), nullable=True)
     image_path = Column(String(500))
+    description = Column(Text, nullable=True)
+    path_pdf = Column(String(1000), nullable=True)
     processed = Column(Boolean, default=False)
     diagram_metadata = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

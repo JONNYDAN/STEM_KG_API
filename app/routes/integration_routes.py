@@ -63,6 +63,10 @@ SUBJECT_SPELLING_NORMALIZATION = {
     "chuon chuon": "dragonfly",
 }
 
+VIDEO_QUERY_STOPWORDS = EN_FILLER_WORDS.union(VI_FILLER_WORDS).union(GENERIC_SUBJECT_TERMS).union({
+    "stem", "science", "education", "video", "youtube", "related", "query"
+})
+
 
 def _strip_accents(text: str) -> str:
     value = "".join(c for c in unicodedata.normalize("NFD", text or "") if unicodedata.category(c) != "Mn")
@@ -179,13 +183,7 @@ def _collect_diagrams_from_categories(postgres_service: PostgresService, categor
             if diagram.id in diagram_seen:
                 continue
             diagram_seen.add(diagram.id)
-            diagrams.append(
-                {
-                    "diagram_id": diagram.id,
-                    "image_path": diagram.image_path,
-                    "category_id": diagram.category_id,
-                }
-            )
+            diagrams.append(_serialize_diagram(diagram))
             if len(diagrams) >= max_diagrams:
                 return diagrams
 
@@ -209,6 +207,28 @@ def _safe_terms(values: Optional[List[str]]) -> List[str]:
         if normalized:
             terms.append(normalized)
     return list(dict.fromkeys(terms))
+
+
+def _serialize_diagram(diagram: Any) -> Dict[str, Any]:
+    if not diagram:
+        return {}
+
+    if isinstance(diagram, dict):
+        return {
+            "diagram_id": diagram.get("diagram_id") or diagram.get("id"),
+            "image_path": diagram.get("image_path"),
+            "category_id": diagram.get("category_id"),
+            "description": diagram.get("description"),
+            "path_pdf": diagram.get("path_pdf") or diagram.get("pdf_path"),
+        }
+
+    return {
+        "diagram_id": getattr(diagram, "id", None),
+        "image_path": getattr(diagram, "image_path", None),
+        "category_id": getattr(diagram, "category_id", None),
+        "description": getattr(diagram, "description", None),
+        "path_pdf": getattr(diagram, "path_pdf", None),
+    }
 
 
 def _collect_annotation_terms(annotation: Any) -> List[str]:
@@ -464,11 +484,7 @@ def _search_diagrams_by_subject_textlabels_global(
         for candidate_id in candidates:
             diagram = postgres_service.get_diagram(candidate_id)
             if diagram:
-                matched = {
-                    "diagram_id": diagram.id,
-                    "image_path": diagram.image_path,
-                    "category_id": diagram.category_id,
-                }
+                matched = _serialize_diagram(diagram)
                 break
 
         if matched:
@@ -573,11 +589,7 @@ def _search_diagram_by_required_subject_terms(
         for lookup_id in lookup_ids:
             diagram = postgres_service.get_diagram(lookup_id)
             if diagram:
-                matched = {
-                    "diagram_id": diagram.id,
-                    "image_path": diagram.image_path,
-                    "category_id": diagram.category_id,
-                }
+                matched = _serialize_diagram(diagram)
                 break
 
         if matched:
@@ -622,24 +634,8 @@ def _select_best_diagram_by_category_and_subject(
 
 
 def _create_video_recommendations(category_name: Optional[str], subject_terms: List[str], query_text: Optional[str]) -> List[Dict[str, str]]:
-    topic_parts = []
-    if category_name:
-        topic_parts.append(category_name)
-    if subject_terms:
-        topic_parts.append(subject_terms[0])
-    if query_text:
-        topic_parts.append(query_text)
-
-    topic = " ".join([part for part in topic_parts if part]).strip() or "stem science education"
-    normalized_query = re.sub(r"\s+", " ", topic).strip()
-    resolved_watch_url = _resolve_youtube_watch_url_from_query(normalized_query)
-    query = quote_plus(normalized_query)
-    return [
-        {
-            "title": f"YouTube recommendation for {topic}",
-            "url": resolved_watch_url or f"https://www.youtube.com/results?search_query={query}",
-        }
-    ]
+    queries = _build_video_search_queries(category_name, subject_terms, query_text)
+    return _create_video_recommendations_from_queries(queries)
 
 
 def _create_video_recommendations_from_queries(queries: List[str]) -> List[Dict[str, str]]:
@@ -651,11 +647,65 @@ def _create_video_recommendations_from_queries(queries: List[str]) -> List[Dict[
         resolved_watch_url = _resolve_youtube_watch_url_from_query(query)
         recommendations.append(
             {
-                "title": f"YouTube recommendation for {query}",
+                "title": f"Video keyword: {query}",
                 "url": resolved_watch_url or f"https://www.youtube.com/results?search_query={quote_plus(query)}",
             }
         )
     return recommendations
+
+
+def _build_video_search_queries(
+    category_name: Optional[str],
+    subject_terms: List[str],
+    query_text: Optional[str],
+    max_queries: int = 3,
+) -> List[str]:
+    candidates: List[str] = []
+
+    normalized_subjects = [
+        _normalize_label(term)
+        for term in (subject_terms or [])
+        if _normalize_label(term) and _normalize_label(term) not in VIDEO_QUERY_STOPWORDS
+    ]
+    normalized_subjects = list(dict.fromkeys(normalized_subjects))
+
+    normalized_category = _normalize_label(category_name or "")
+    if normalized_category and normalized_category not in VIDEO_QUERY_STOPWORDS:
+        candidates.append(normalized_category)
+
+    if normalized_subjects:
+        candidates.append(normalized_subjects[0])
+
+    if normalized_subjects and normalized_category:
+        candidates.append(f"{normalized_subjects[0]} {normalized_category}")
+
+    normalized_query = _normalize_prompt_to_english(query_text or "") or _normalize_label(query_text or "")
+    query_tokens = [
+        token
+        for token in normalized_query.split()
+        if len(token) >= 3 and token not in VIDEO_QUERY_STOPWORDS
+    ]
+    if query_tokens:
+        candidates.append(" ".join(query_tokens[:4]))
+    if len(query_tokens) >= 2:
+        candidates.append(" ".join(query_tokens[:2]))
+
+    final_queries: List[str] = []
+    for candidate in candidates:
+        normalized_candidate = _normalize_label(candidate)
+        if not normalized_candidate:
+            continue
+        if normalized_candidate in VIDEO_QUERY_STOPWORDS:
+            continue
+        if normalized_candidate not in final_queries:
+            final_queries.append(normalized_candidate)
+        if len(final_queries) >= max_queries:
+            break
+
+    if not final_queries:
+        final_queries = ["stem science concept"]
+
+    return final_queries
 
 
 def _resolve_youtube_watch_url_from_query(query: str) -> Optional[str]:
@@ -1524,14 +1574,7 @@ def _query_databases(
     if postgres_results:
         best_category = postgres_results[0]
         diagrams = postgres_service.get_diagrams_by_category(best_category["category_id"])
-        postgres_diagrams = [
-            {
-                "diagram_id": d.id,
-                "image_path": d.image_path,
-                "category_id": d.category_id
-            }
-            for d in diagrams
-        ]
+        postgres_diagrams = [_serialize_diagram(d) for d in diagrams]
 
     neo4j_results = neo4j_service.search_diagrams_by_triple(subject, relationship, object_value)
     diagram_ids = [r.get("diagram_id") for r in neo4j_results if r.get("diagram_id")]
@@ -1552,11 +1595,7 @@ def _query_databases(
     for diagram_id in diagram_ids:
         diagram = postgres_service.get_diagram(diagram_id)
         if diagram:
-            neo4j_diagrams.append({
-                "diagram_id": diagram.id,
-                "image_path": diagram.image_path,
-                "category_id": diagram.category_id
-            })
+            neo4j_diagrams.append(_serialize_diagram(diagram))
 
     merged_diagrams = list({d["diagram_id"]: d for d in (postgres_diagrams + neo4j_diagrams)}.values())
     one_diagram = _first_diagram(merged_diagrams)
@@ -1979,11 +2018,7 @@ def query_stem_multimedia(
                         for lookup_id in lookup_ids:
                             diagram_obj = postgres_service.get_diagram(lookup_id)
                             if diagram_obj:
-                                resolved = {
-                                    "diagram_id": diagram_obj.id,
-                                    "image_path": diagram_obj.image_path,
-                                    "category_id": diagram_obj.category_id,
-                                }
+                                resolved = _serialize_diagram(diagram_obj)
                                 break
 
                         if resolved:

@@ -348,6 +348,8 @@ class EntityService:
             "file_size": entity.file_size,
             "trigger_code": entity.trigger_code,
             "image_path": entity.image_path,
+            "description": entity.description,
+            "path_pdf": entity.path_pdf,
             "processed": entity.processed,
             "diagram_metadata": entity.diagram_metadata,
         })
@@ -358,6 +360,8 @@ class EntityService:
             "root_category": entity.root_category_name,
             "root_category_id": entity.root_category_id,
             "image_path": entity.image_path,
+            "description": entity.description,
+            "path_pdf": entity.path_pdf,
             "processed": entity.processed,
             "trigger_code": entity.trigger_code,
             "file_name": entity.file_name,

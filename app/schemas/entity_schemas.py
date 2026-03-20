@@ -130,6 +130,8 @@ class DiagramCreate(BaseModel):
     file_size: Optional[int] = None
     trigger_code: Optional[str] = None
     image_path: Optional[str] = None
+    description: Optional[str] = None
+    path_pdf: Optional[str] = None
     processed: Optional[bool] = False
     diagram_metadata: Optional[Any] = None
 
@@ -145,6 +147,8 @@ class DiagramResponse(BaseModel):
     file_size: Optional[int] = None
     trigger_code: Optional[str] = None
     image_path: Optional[str] = None
+    description: Optional[str] = None
+    path_pdf: Optional[str] = None
     processed: Optional[bool] = None
     diagram_metadata: Optional[Any] = None
     created_at: Optional[datetime] = None

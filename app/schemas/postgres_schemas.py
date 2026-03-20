@@ -37,6 +37,8 @@ class DiagramBase(BaseModel):
     id: str
     category_id: int
     image_path: Optional[str] = None
+    description: Optional[str] = None
+    path_pdf: Optional[str] = None
     diagram_metadata: Optional[dict] = None  # Đổi tên từ metadata
 
 class DiagramCreate(DiagramBase):
@@ -128,6 +130,8 @@ class CategoryUpdate(BaseModel):
 class DiagramUpdate(BaseModel):
     category_id: Optional[int] = None
     image_path: Optional[str] = None
+    description: Optional[str] = None
+    path_pdf: Optional[str] = None
     processed: Optional[bool] = None
     diagram_metadata: Optional[dict] = None
 

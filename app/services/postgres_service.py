@@ -707,6 +707,8 @@ class PostgresService:
                     "diagram_id": diagram.id,
                     "image_path": diagram.image_path,
                     "category_id": diagram.category_id,
+                    "description": diagram.description,
+                    "path_pdf": diagram.path_pdf,
                 }
 
         if not category_map:
@@ -756,6 +758,8 @@ class PostgresService:
                                 "diagram_id": diagram.id,
                                 "image_path": diagram.image_path,
                                 "category_id": diagram.category_id,
+                                "description": diagram.description,
+                                "path_pdf": diagram.path_pdf,
                             }
 
         subject_payload = [

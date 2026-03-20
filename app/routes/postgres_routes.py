@@ -260,6 +260,8 @@ def get_knowledge_graph_by_diagram(
             "id": diagram.id,
             "category_id": diagram.category_id,
             "image_path": diagram.image_path,
+            "description": diagram.description,
+            "path_pdf": diagram.path_pdf,
             "processed": diagram.processed,
         },
     )
@@ -321,6 +323,8 @@ def get_knowledge_graph_by_diagram(
             "diagram": {
                 "id": diagram.id,
                 "image_path": diagram.image_path,
+                "description": diagram.description,
+                "path_pdf": diagram.path_pdf,
             },
             "triple_count": len(sro_rows),
             "node_count": len(nodes),
