@@ -209,6 +209,13 @@ def _safe_terms(values: Optional[List[str]]) -> List[str]:
     return list(dict.fromkeys(terms))
 
 
+def _normalize_analysis_mode(value: Optional[str]) -> str:
+    mode = _normalize_label(value or "")
+    if mode not in {"basic", "gemini"}:
+        return "gemini"
+    return mode
+
+
 def _serialize_diagram(diagram: Any) -> Dict[str, Any]:
     if not diagram:
         return {}
@@ -1680,6 +1687,7 @@ def query_stem_multimedia(
     query_text: Optional[str] = Form(None),
     image: Optional[UploadFile] = File(None),
     user_id: Optional[str] = Form(None),
+    analysis_mode: Optional[str] = Form(None),
     db: Session = Depends(get_postgres_db)
 ) -> Dict[str, Any]:
     """Nhận text/ảnh, lưu input, gọi model OCR, sinh bộ ba và truy vấn KG."""
@@ -1700,6 +1708,7 @@ def query_stem_multimedia(
     final_output: Optional[Dict[str, Any]] = None
     phase: Optional[str] = None
     analysis_case: Optional[str] = None
+    selected_analysis_mode = _normalize_analysis_mode(analysis_mode)
 
     try:
         model_files = None
@@ -1707,6 +1716,7 @@ def query_stem_multimedia(
 
         if query_text:
             model_data["query_text"] = query_text
+        model_data["analysis_mode"] = selected_analysis_mode
 
         if image:
             os.makedirs(config.UPLOAD_DIR, exist_ok=True)
@@ -1729,9 +1739,22 @@ def query_stem_multimedia(
                 files=model_files,
                 timeout=75
             )
-            response.raise_for_status()
+            if not response.ok:
+                response_detail = response.text
+                try:
+                    response_json = response.json()
+                    if isinstance(response_json, dict):
+                        response_detail = response_json.get("error") or response_json.get("message") or response_detail
+                except Exception:
+                    pass
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Model analyze error ({response.status_code}): {response_detail}",
+                )
             model_output = response.json()
         except Exception as e:
+            if isinstance(e, HTTPException):
+                raise
             raise HTTPException(status_code=502, detail=f"Model analyze error: {str(e)}")
 
         phase = model_output.get("phase") if model_output else None
@@ -2179,6 +2202,7 @@ def query_stem_multimedia(
                     "user_id": user_id,
                     "model_output": model_output,
                     "analysis_case": analysis_case,
+                    "analysis_mode": selected_analysis_mode,
                     "reason": "No category/subject/SRO match found in current knowledge base",
                     "status": "pending",
                 }
@@ -2208,6 +2232,7 @@ def query_stem_multimedia(
             "routing_mode": routing_mode,
             "phase": phase,
             "analysis_case": analysis_case,
+            "analysis_mode": selected_analysis_mode,
             "triples": triples,
             "query_results": query_results,
             "final_output": final_output,
@@ -2225,6 +2250,7 @@ def query_stem_multimedia(
                 "routing_mode": routing_mode,
                 "phase": phase,
                 "analysis_case": analysis_case,
+                "analysis_mode": selected_analysis_mode,
                 "image_url": saved_image_url
             },
             "model_output": model_output,
