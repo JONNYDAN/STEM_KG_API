@@ -67,6 +67,39 @@ VIDEO_QUERY_STOPWORDS = EN_FILLER_WORDS.union(VI_FILLER_WORDS).union(GENERIC_SUB
     "stem", "science", "education", "video", "youtube", "related", "query"
 })
 
+LOW_SIGNAL_VIDEO_TOKENS = {
+    "cross", "section", "figure", "fig", "label", "labels", "part", "parts",
+    "step", "steps", "phase", "stages", "stage", "subject", "intersection",
+    "textlabel", "schema", "view", "image", "picture",
+}
+
+
+def _video_query_priority_score(phrase: str) -> float:
+    tokens = [token for token in _normalize_label(phrase).split() if token]
+    if not tokens:
+        return -100.0
+
+    info_tokens = [
+        token
+        for token in tokens
+        if token not in VIDEO_QUERY_STOPWORDS
+        and token not in LOW_SIGNAL_VIDEO_TOKENS
+        and len(token) >= 3
+    ]
+    low_signal_hits = [token for token in tokens if token in LOW_SIGNAL_VIDEO_TOKENS]
+    short_hits = [token for token in tokens if len(token) <= 1]
+
+    score = 0.0
+    score += len(info_tokens) * 3.0
+    score += min(len(tokens), 4) * 0.25
+    score -= len(low_signal_hits) * 1.5
+    score -= len(short_hits) * 2.0
+
+    if len(info_tokens) == 0:
+        score -= 3.0
+
+    return score
+
 
 def _strip_accents(text: str) -> str:
     value = "".join(c for c in unicodedata.normalize("NFD", text or "") if unicodedata.category(c) != "Mn")
@@ -640,21 +673,24 @@ def _select_best_diagram_by_category_and_subject(
     return []
 
 
-def _create_video_recommendations(category_name: Optional[str], subject_terms: List[str], query_text: Optional[str]) -> List[Dict[str, str]]:
+def _create_video_recommendations(category_name: Optional[str], subject_terms: List[str], query_text: Optional[str]) -> List[Dict[str, Any]]:
     queries = _build_video_search_queries(category_name, subject_terms, query_text)
     return _create_video_recommendations_from_queries(queries)
 
 
-def _create_video_recommendations_from_queries(queries: List[str]) -> List[Dict[str, str]]:
-    recommendations: List[Dict[str, str]] = []
+def _create_video_recommendations_from_queries(queries: List[str]) -> List[Dict[str, Any]]:
+    recommendations: List[Dict[str, Any]] = []
     for raw_query in queries or []:
         query = _normalize_label(str(raw_query))
         if not query:
             continue
         resolved_watch_url = _resolve_youtube_watch_url_from_query(query)
+        priority_score = round(_video_query_priority_score(query), 2)
         recommendations.append(
             {
                 "title": f"Video keyword: {query}",
+                "keyword": query,
+                "priority_score": priority_score,
                 "url": resolved_watch_url or f"https://www.youtube.com/results?search_query={quote_plus(query)}",
             }
         )
@@ -665,16 +701,34 @@ def _build_video_search_queries(
     category_name: Optional[str],
     subject_terms: List[str],
     query_text: Optional[str],
-    max_queries: int = 3,
+    max_queries: int = 6,
 ) -> List[str]:
     candidates: List[str] = []
 
-    normalized_subjects = [
-        _normalize_label(term)
-        for term in (subject_terms or [])
-        if _normalize_label(term) and _normalize_label(term) not in VIDEO_QUERY_STOPWORDS
-    ]
+    normalized_subjects: List[str] = []
+    for raw_term in subject_terms or []:
+        normalized_term = _normalize_label(raw_term)
+        if not normalized_term:
+            continue
+
+        # Keep the full phrase and also meaningful sub-parts so we do not lose
+        # intersection hints like "volcanic ash" from mixed labels.
+        parts = [normalized_term]
+        parts.extend(
+            _normalize_label(part)
+            for part in re.split(r"\s*(?:,|;|\|| and | & )\s*", normalized_term)
+            if _normalize_label(part)
+        )
+
+        for part in parts:
+            if part in VIDEO_QUERY_STOPWORDS:
+                continue
+            if len(part) < 2:
+                continue
+            normalized_subjects.append(part)
+
     normalized_subjects = list(dict.fromkeys(normalized_subjects))
+    normalized_subjects = sorted(normalized_subjects, key=_video_query_priority_score, reverse=True)
 
     normalized_category = _normalize_label(category_name or "")
     if normalized_category and normalized_category not in VIDEO_QUERY_STOPWORDS:
@@ -683,8 +737,30 @@ def _build_video_search_queries(
     if normalized_subjects:
         candidates.append(normalized_subjects[0])
 
+    # Include the top informative subject terms and their combination to preserve
+    # key intersection context (for example: "cross section f" + "volcano").
+    top_subjects = normalized_subjects[:4]
+    for subject in top_subjects:
+        candidates.append(subject)
+    if len(top_subjects) >= 2:
+        candidates.append(" ".join(top_subjects[:2]))
+    if len(top_subjects) >= 3:
+        candidates.append(" ".join(top_subjects[:3]))
+    if len(top_subjects) >= 4:
+        candidates.append(" ".join(top_subjects[:4]))
+
+    if len(normalized_subjects) >= 2:
+        candidates.append(" ".join(normalized_subjects[:2]))
+        candidates.append(normalized_subjects[1])
+
     if normalized_subjects and normalized_category:
         candidates.append(f"{normalized_subjects[0]} {normalized_category}")
+
+    if len(normalized_subjects) >= 2 and normalized_category:
+        candidates.append(f"{' '.join(normalized_subjects[:2])} {normalized_category}")
+
+    if top_subjects and normalized_category:
+        candidates.append(f"{' '.join(top_subjects)} {normalized_category}")
 
     normalized_query = _normalize_prompt_to_english(query_text or "") or _normalize_label(query_text or "")
     query_tokens = [
@@ -711,6 +787,10 @@ def _build_video_search_queries(
 
     if not final_queries:
         final_queries = ["stem science concept"]
+
+    # Keep most meaningful queries first so UI primary video uses better keywords.
+    final_queries = sorted(final_queries, key=_video_query_priority_score, reverse=True)
+    final_queries = final_queries[:max_queries]
 
     return final_queries
 
@@ -1355,8 +1435,24 @@ def _build_final_output(
     if isinstance(creative_description, str) and creative_description.strip():
         base_description = creative_description.strip()
 
-    creative_videos = _create_video_recommendations_from_queries(creative_output.get("youtube_queries") or [])
-    video_recommendations = creative_videos or _create_video_recommendations(category_name, subject_terms, query_text)
+    creative_queries = [
+        _normalize_label(str(query))
+        for query in (creative_output.get("youtube_queries") or [])
+        if _normalize_label(str(query))
+    ]
+    fallback_queries = _build_video_search_queries(category_name, subject_terms, query_text)
+
+    merged_queries: List[str] = []
+    for query in fallback_queries + creative_queries:
+        normalized_query = _normalize_label(query)
+        if not normalized_query:
+            continue
+        if normalized_query not in merged_queries:
+            merged_queries.append(normalized_query)
+        if len(merged_queries) >= 6:
+            break
+
+    video_recommendations = _create_video_recommendations_from_queries(merged_queries)
     scientific_analysis = creative_output.get("scientific_analysis") or {}
     diagram_explanation = _build_diagram_explanation(
         category_name=category_name,
