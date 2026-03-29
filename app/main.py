@@ -1,10 +1,12 @@
 from fastapi import FastAPI
+from fastapi import Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import os
 from app.config import config
 from app.database.postgres_conn import engine, Base
 from app.models.postgres_models import User
+from app.services.token_auth import get_current_user
 
 from app.routes import (
     postgres_routes,
@@ -33,20 +35,20 @@ app.mount(f"{config.API_PREFIX}/images", StaticFiles(directory=config.IMAGE_DIR)
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=config.CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Include routers
-app.include_router(postgres_routes.router, prefix=config.API_PREFIX)
-app.include_router(neo4j_routes.router, prefix=config.API_PREFIX)
-app.include_router(mongo_routes.router, prefix=config.API_PREFIX)
-app.include_router(integration_routes.router, prefix=config.API_PREFIX)
-app.include_router(search_routes.router, prefix=config.API_PREFIX)
+app.include_router(postgres_routes.router, prefix=config.API_PREFIX, dependencies=[Depends(get_current_user)])
+app.include_router(neo4j_routes.router, prefix=config.API_PREFIX, dependencies=[Depends(get_current_user)])
+app.include_router(mongo_routes.router, prefix=config.API_PREFIX, dependencies=[Depends(get_current_user)])
+app.include_router(integration_routes.router, prefix=config.API_PREFIX, dependencies=[Depends(get_current_user)])
+app.include_router(search_routes.router, prefix=config.API_PREFIX, dependencies=[Depends(get_current_user)])
 app.include_router(auth_routes.router, prefix=config.API_PREFIX)
-app.include_router(entity_routes.router, prefix=config.API_PREFIX)
+app.include_router(entity_routes.router, prefix=config.API_PREFIX, dependencies=[Depends(get_current_user)])
 
 @app.get("/")
 def read_root():

@@ -1,52 +1,29 @@
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-import jwt
 
 from app.schemas.auth_schemas import UserCreate, UserLogin
-from app.services.auth_service import AuthService
+from app.services.middleware_auth_service import MiddlewareAuthService
+from app.services.token_auth import decode_access_token, get_current_user
 from app.config import config
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 security = HTTPBearer()
 
 
-def _decode_token(token: str):
-    try:
-        return jwt.decode(token, config.JWT_SECRET, algorithms=[config.JWT_ALGORITHM])
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=str(e))
-
-
 @router.post("/register")
 def register(payload: UserCreate):
-    service = AuthService()
-
-    existing = service.get_user_by_username(payload.username)
-    if existing:
-        raise HTTPException(status_code=400, detail="Username already exists")
-
-    try:
-        user = service.create_user(payload.model_dump())
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    token = service.create_access_token(user)
-
-    return {
-        "success": True,
-        "data": {
-            "user": service.to_user_response(user),
-            "token": token,
-        },
-    }
+    raise HTTPException(
+        status_code=403,
+        detail="Đăng ký local đã tắt. Vui lòng dùng hệ SSO/middleware để tạo tài khoản.",
+    )
 
 
 @router.post("/login")
 def login(payload: UserLogin):
-    service = AuthService()
-
+    service = MiddlewareAuthService()
     user = service.authenticate(payload.username, payload.password)
     if not user:
-        raise HTTPException(status_code=401, detail="Invalid username or password")
+        raise HTTPException(status_code=401, detail="Invalid username/email or password")
 
     token = service.create_access_token(user)
     return {
@@ -61,17 +38,33 @@ def login(payload: UserLogin):
 @router.get("/profile")
 def profile(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
-    payload = _decode_token(token)
+    payload = decode_access_token(token).get("claims", {})
 
-    service = AuthService()
-    user = service.get_user_by_username(payload.get("sub"))
+    service = MiddlewareAuthService()
+    user_id = payload.get(config.JWT_USER_ID_CLAIM)
+    user = service.get_user_by_id(str(user_id)) if user_id else None
+
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        return {
+            "success": True,
+            "data": {
+                "user": {
+                    "id": str(payload.get(config.JWT_USER_ID_CLAIM) or ""),
+                    "staffCode": str(payload.get(config.JWT_USER_ID_CLAIM) or ""),
+                    "name": payload.get("name") or payload.get("preferred_username") or "SSO User",
+                    "username": payload.get("preferred_username") or payload.get("sub") or str(payload.get(config.JWT_USER_ID_CLAIM) or ""),
+                    "role": payload.get("role") or "user",
+                    "group": payload.get("group") or [],
+                    "photoURL": payload.get("photoURL") or "",
+                },
+                "claims": payload,
+            },
+        }
 
     return {
         "success": True,
         "data": {
-            "user": service.to_user_response(user),
+            "user": service.to_user_response(user, claims=payload),
         },
     }
 
@@ -79,43 +72,33 @@ def profile(credentials: HTTPAuthorizationCredentials = Depends(security)):
 @router.get("/verify")
 def verify(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
-    _decode_token(token)
-    return {"success": True, "message": "Token hợp lệ"}
+    current_user = decode_access_token(token)
+    return {
+        "success": True,
+        "message": "Token hợp lệ",
+        "data": {
+            "user_id": current_user.get("user_id"),
+            "tenant_id": current_user.get("tenant_id"),
+        },
+    }
+
+
+@router.get("/sso/profile")
+def sso_profile(current_user=Depends(get_current_user)):
+    claims = current_user.get("claims", {})
+    return {
+        "success": True,
+        "data": {
+            "user_id": current_user.get("user_id"),
+            "tenant_id": current_user.get("tenant_id"),
+            "claims": claims,
+        },
+    }
 
 
 @router.post("/seed-admin")
 def seed_admin():
-    """
-    Endpoint to create default admin account
-    Username: admin
-    Password: admin123
-    """
-    service = AuthService()
-    
-    existing = service.get_user_by_username("admin")
-    if existing:
-        return {
-            "success": True,
-            "message": "Admin account already exists",
-        }
-    
-    admin_data = {
-        "username": "admin",
-        "password": "admin123",
-        "name": "Administrator",
-        "role": "admin",
-    }
-    
-    try:
-        user = service.create_user(admin_data)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    
-    return {
-        "success": True,
-        "message": "Admin account created successfully",
-        "data": {
-            "username": "admin",
-            "password": "admin123",
-        },
-    }
+    raise HTTPException(
+        status_code=403,
+        detail="Seed admin local đã tắt. Quyền truy cập lấy từ tài khoản middleware.",
+    )

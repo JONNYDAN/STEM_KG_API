@@ -3,6 +3,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _parse_csv_env(value: str):
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
 class Config:
     # PostgreSQL
     POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
@@ -10,6 +16,13 @@ class Config:
     POSTGRES_DB = os.getenv("POSTGRES_DB", "stem_kg")
     POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
     POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "password")
+
+    # Auth PostgreSQL (middleware etechs_global)
+    AUTH_POSTGRES_HOST = os.getenv("AUTH_POSTGRES_HOST", POSTGRES_HOST)
+    AUTH_POSTGRES_PORT = int(os.getenv("AUTH_POSTGRES_PORT", POSTGRES_PORT))
+    AUTH_POSTGRES_DB = os.getenv("AUTH_POSTGRES_DB", POSTGRES_DB)
+    AUTH_POSTGRES_USER = os.getenv("AUTH_POSTGRES_USER", POSTGRES_USER)
+    AUTH_POSTGRES_PASSWORD = os.getenv("AUTH_POSTGRES_PASSWORD", POSTGRES_PASSWORD)
     
     # MongoDB
     MONGO_HOST = os.getenv("MONGO_HOST", "localhost")
@@ -51,5 +64,14 @@ class Config:
     JWT_SECRET = os.getenv("JWT_SECRET", "stem_kg_secret")
     JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
     JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "1440"))
+
+    # SSO / Middleware integration
+    JWT_USER_ID_CLAIM = os.getenv("JWT_USER_ID_CLAIM", "user_id")
+    JWT_TENANT_ID_CLAIM = os.getenv("JWT_TENANT_ID_CLAIM", "tenant_id")
+    JWT_TOKEN_TYPE_CLAIM = os.getenv("JWT_TOKEN_TYPE_CLAIM", "token_type")
+    JWT_REQUIRED_TOKEN_TYPE = os.getenv("JWT_REQUIRED_TOKEN_TYPE", "access")
+
+    # CORS
+    CORS_ALLOWED_ORIGINS = _parse_csv_env(os.getenv("CORS_ALLOWED_ORIGINS", "*")) or ["*"]
     
 config = Config()
