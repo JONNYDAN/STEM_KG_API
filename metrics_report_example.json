@@ -1,0 +1,63 @@
+{
+  "config": {
+    "qrels": "D:\\HCMUE\\KLTN v2\\STEM_KG_API\\scripts\\qrels_example.json",
+    "predictions_file": "D:\\HCMUE\\KLTN v2\\STEM_KG_API\\smoke_test_report.json",
+    "base_url": null,
+    "top_k": 5,
+    "analysis_mode": "gemini",
+    "user_id": "metrics-test-user",
+    "timeout": 120
+  },
+  "metrics": {
+    "queries_count": 3,
+    "macro_precision@5": 0.2,
+    "macro_recall@5": 1.0,
+    "macro_f1@5": 0.333333,
+    "map@5": 1.0
+  },
+  "per_query": [
+    {
+      "id": "1",
+      "query": "Hãy cho tôi biết vòng đời của con bọ rùa diễn ra như thế nào?",
+      "relevant_diagram_ids": [
+        "105.png"
+      ],
+      "predicted_diagram_ids": [
+        "105.png"
+      ],
+      "precision@5": 0.2,
+      "recall@5": 1.0,
+      "f1@5": 0.333333,
+      "ap@5": 1.0
+    },
+    {
+      "id": "2",
+      "query": "Vòng tuần hoàn nước có các quy trình như thế nào?",
+      "relevant_diagram_ids": [
+        "1483.png"
+      ],
+      "predicted_diagram_ids": [
+        "1483.png"
+      ],
+      "precision@5": 0.2,
+      "recall@5": 1.0,
+      "f1@5": 0.333333,
+      "ap@5": 1.0
+    },
+    {
+      "id": "3",
+      "query": "Hệ mặt trời là gì vậy?",
+      "relevant_diagram_ids": [
+        "1422.png"
+      ],
+      "predicted_diagram_ids": [
+        "1422.png"
+      ],
+      "precision@5": 0.2,
+      "recall@5": 1.0,
+      "f1@5": 0.333333,
+      "ap@5": 1.0
+    }
+  ],
+  "live_run_traces": []
+}

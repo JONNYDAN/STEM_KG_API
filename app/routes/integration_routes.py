@@ -6,6 +6,7 @@ import os
 import re
 import json
 import uuid
+import time
 import requests
 import unicodedata
 from datetime import datetime
@@ -1805,6 +1806,9 @@ def query_stem_multimedia(
     phase: Optional[str] = None
     analysis_case: Optional[str] = None
     selected_analysis_mode = _normalize_analysis_mode(analysis_mode)
+    request_started_at = time.perf_counter()
+    model_analysis_ms: Optional[float] = None
+    kg_query_ms: Optional[float] = None
 
     try:
         model_files = None
@@ -1828,6 +1832,7 @@ def query_stem_multimedia(
                 "image": (image.filename, image_bytes, image.content_type or "application/octet-stream")
             }
 
+        model_stage_started_at = time.perf_counter()
         try:
             response = requests.post(
                 config.MODEL_OCR_URL,
@@ -1848,10 +1853,13 @@ def query_stem_multimedia(
                     detail=f"Model analyze error ({response.status_code}): {response_detail}",
                 )
             model_output = response.json()
+            model_analysis_ms = round((time.perf_counter() - model_stage_started_at) * 1000.0, 3)
         except Exception as e:
             if isinstance(e, HTTPException):
                 raise
             raise HTTPException(status_code=502, detail=f"Model analyze error: {str(e)}")
+
+        kg_stage_started_at = time.perf_counter()
 
         phase = model_output.get("phase") if model_output else None
         analysis_case = model_output.get("analysis_case") if model_output else None
@@ -2318,6 +2326,9 @@ def query_stem_multimedia(
         elif routing_mode == "pending_learning":
             analysis_case = "case_3_pending_learning"
 
+        kg_query_ms = round((time.perf_counter() - kg_stage_started_at) * 1000.0, 3)
+        total_elapsed_ms = round((time.perf_counter() - request_started_at) * 1000.0, 3)
+
         log_payload = {
             "type": "mixed" if query_text and image else "image" if image else "text",
             "query_text": query_text,
@@ -2332,6 +2343,11 @@ def query_stem_multimedia(
             "triples": triples,
             "query_results": query_results,
             "final_output": final_output,
+            "timing": {
+                "model_analysis_ms": model_analysis_ms,
+                "kg_query_ms": kg_query_ms,
+                "total_elapsed_ms": total_elapsed_ms,
+            },
             "timestamp": datetime.utcnow().isoformat()
         }
         log = mongo_service.create_query_log(log_payload)
@@ -2354,6 +2370,11 @@ def query_stem_multimedia(
             "query_results": query_results,
             "final_output": final_output,
             "pending_review": pending_learning_item,
+            "timing": {
+                "model_analysis_ms": model_analysis_ms,
+                "kg_query_ms": kg_query_ms,
+                "total_elapsed_ms": total_elapsed_ms,
+            },
         }
 
     except HTTPException:

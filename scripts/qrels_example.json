@@ -1,0 +1,17 @@
+[
+  {
+    "id": 1,
+    "query": "Hãy cho tôi biết vòng đời của con bọ rùa diễn ra như thế nào?",
+    "relevant_diagram_ids": ["105.png"]
+  },
+  {
+    "id": 2,
+    "query": "Vòng tuần hoàn nước có các quy trình như thế nào?",
+    "relevant_diagram_ids": ["1483.png"]
+  },
+  {
+    "id": 3,
+    "query": "Hệ mặt trời là gì vậy?",
+    "relevant_diagram_ids": ["1422.png"]
+  }
+]

@@ -1,0 +1,139 @@
+{
+  "config": {
+    "base_url": "http://localhost:8000",
+    "runs": 3,
+    "top_k": 5,
+    "analysis_mode": "gemini",
+    "input_modes": [
+      "image",
+      "both"
+    ],
+    "test_images_dir": "D:\\HCMUE\\KLTN v2\\test_images",
+    "seed": 42,
+    "generated_at": "2026-03-23T10:18:28.707662+00:00"
+  },
+  "overall_summary": {
+    "runs": 3,
+    "evaluated_runs": 0,
+    "success_rate": 0.0,
+    "diagram_found_rate": 0.0,
+    "map@5": 0.0,
+    "macro_precision@5": 0.0,
+    "macro_recall@5": 0.0,
+    "macro_f1@5": 0.0,
+    "avg_client_total_ms": 4115.825,
+    "avg_model_analysis_ms": 0.0,
+    "avg_kg_query_ms": 0.0
+  },
+  "mode_summary": {
+    "both": {
+      "runs": 1,
+      "evaluated_runs": 0,
+      "success_rate": 0.0,
+      "diagram_found_rate": 0.0,
+      "map@5": 0.0,
+      "macro_precision@5": 0.0,
+      "macro_recall@5": 0.0,
+      "macro_f1@5": 0.0,
+      "avg_client_total_ms": 4082.868,
+      "median_client_total_ms": 4082.868,
+      "p90_client_total_ms": 4082.868,
+      "avg_model_analysis_ms": 0.0,
+      "avg_kg_query_ms": 0.0
+    },
+    "image": {
+      "runs": 2,
+      "evaluated_runs": 0,
+      "success_rate": 0.0,
+      "diagram_found_rate": 0.0,
+      "map@5": 0.0,
+      "macro_precision@5": 0.0,
+      "macro_recall@5": 0.0,
+      "macro_f1@5": 0.0,
+      "avg_client_total_ms": 4132.303,
+      "median_client_total_ms": 4132.303,
+      "p90_client_total_ms": 4135.938,
+      "avg_model_analysis_ms": 0.0,
+      "avg_kg_query_ms": 0.0
+    }
+  },
+  "conclusion": "Mode phản hồi nhanh nhất theo trung bình client time: both.\nImage-only hiện chưa có ground truth đầy đủ nên chủ yếu đánh giá latency/success rate.",
+  "runs": [
+    {
+      "run_id": 1,
+      "input_mode": "image",
+      "analysis_mode": "gemini",
+      "topic": "solar eclipse",
+      "query_text": null,
+      "image_path": "D:\\HCMUE\\KLTN v2\\test_images\\solareclipses_main.jpg",
+      "status": "error",
+      "error": "HTTPConnectionPool(host='localhost', port=8000): Max retries exceeded with url: /api/integration/query (Caused by NewConnectionError(\"HTTPConnection(host='localhost', port=8000): Failed to establish a new connection: [WinError 10061] No connection could be made because the target machine actively refused it\"))",
+      "has_diagram": false,
+      "routing_mode": null,
+      "predicted_top1": null,
+      "predicted_ids": [],
+      "relevant_ids": [
+        "1630.png"
+      ],
+      "precision@5": null,
+      "recall@5": null,
+      "f1@5": null,
+      "ap@5": null,
+      "client_total_ms": 4127.76,
+      "server_total_ms": null,
+      "model_analysis_ms": null,
+      "kg_query_ms": null,
+      "timestamp": "2026-03-23T10:18:20.487053+00:00"
+    },
+    {
+      "run_id": 2,
+      "input_mode": "both",
+      "analysis_mode": "gemini",
+      "topic": "volcano",
+      "query_text": "Bạn cho tôi một hình ảnh cấu trúc của núi lửa được không?",
+      "image_path": "D:\\HCMUE\\KLTN v2\\test_images\\solareclipses_main.jpg",
+      "status": "error",
+      "error": "HTTPConnectionPool(host='localhost', port=8000): Max retries exceeded with url: /api/integration/query (Caused by NewConnectionError(\"HTTPConnection(host='localhost', port=8000): Failed to establish a new connection: [WinError 10061] No connection could be made because the target machine actively refused it\"))",
+      "has_diagram": false,
+      "routing_mode": null,
+      "predicted_top1": null,
+      "predicted_ids": [],
+      "relevant_ids": [
+        "1455.png"
+      ],
+      "precision@5": null,
+      "recall@5": null,
+      "f1@5": null,
+      "ap@5": null,
+      "client_total_ms": 4082.868,
+      "server_total_ms": null,
+      "model_analysis_ms": null,
+      "kg_query_ms": null,
+      "timestamp": "2026-03-23T10:18:24.570150+00:00"
+    },
+    {
+      "run_id": 3,
+      "input_mode": "image",
+      "analysis_mode": "gemini",
+      "topic": "unknown",
+      "query_text": null,
+      "image_path": "D:\\HCMUE\\KLTN v2\\test_images\\img_201407190034545359.webp",
+      "status": "error",
+      "error": "HTTPConnectionPool(host='localhost', port=8000): Max retries exceeded with url: /api/integration/query (Caused by NewConnectionError(\"HTTPConnection(host='localhost', port=8000): Failed to establish a new connection: [WinError 10061] No connection could be made because the target machine actively refused it\"))",
+      "has_diagram": false,
+      "routing_mode": null,
+      "predicted_top1": null,
+      "predicted_ids": [],
+      "relevant_ids": [],
+      "precision@5": null,
+      "recall@5": null,
+      "f1@5": null,
+      "ap@5": null,
+      "client_total_ms": 4136.847,
+      "server_total_ms": null,
+      "model_analysis_ms": null,
+      "kg_query_ms": null,
+      "timestamp": "2026-03-23T10:18:28.707088+00:00"
+    }
+  ]
+}
